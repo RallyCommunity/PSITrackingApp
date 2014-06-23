@@ -1,0 +1,32 @@
+{
+   "name": "Release Tracking Board",
+   "className": "Rally.apps.releasetracking.ReleaseTrackingApp",
+   "server": "https://rally1.rallydev.com",
+   "sdk": "2.0rc3",
+   "javascript": [
+      "treegrid/FormattedIDRendererOverride.js",
+      "treegrid/TreeStore.js",
+      "treegrid/TreeStoreBuilder.js",
+      "src/statsbanner/BannerWidget.js",
+      "src/statsbanner/Gauge.js",
+      "src/statsbanner/PlannedVelocity.js",
+      "src/statsbanner/TimeboxEnd.js",
+      "src/statsbanner/LateStories.js",
+      "src/statsbanner/Accepted.js",
+      "src/statsbanner/EstimatedStories.js",
+      "src/statsbanner/releaseprogresscharts/ReleaseProgressMixin.js",
+      "src/statsbanner/releaseprogresscharts/ReleaseProgressChart.js",
+      "src/statsbanner/releaseprogresscharts/PieChart.js",
+      "src/statsbanner/releaseprogresscharts/MinimalPieChart.js",
+      "src/statsbanner/ReleaseProgressDialogChartToggle.js",
+      "src/statsbanner/ReleaseProgressDialog.js",
+      "src/statsbanner/ReleaseProgress.js",
+      "src/statsbanner/CollapseExpand.js",
+      "src/StatsBanner.js",
+      "src/ReleaseTrackingApp.js"
+   ],
+   "css": [
+      "src/StatsBanner.less",
+      "src/ReleaseTrackingApp.less"
+   ]
+}

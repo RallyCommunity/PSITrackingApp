@@ -1,0 +1,3982 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Release Tracking Board</title>
+
+    <script type="text/javascript" src="/apps/2.0rc3/sdk.js"></script>
+
+    <script type="text/javascript">
+        Rally.onReady(function () {
+                (function () {
+  var Ext = window.Ext4 || window.Ext;
+
+  Ext.define('Rally.ui.renderer.template.FormattedIDTemplate2', {
+    override: 'Rally.ui.renderer.template.FormattedIDTemplate',
+
+    createIcon: function(data){
+      if (this.showIcon === false) {
+        return '';
+      }
+
+      var className = '';
+      switch (data._type.toLowerCase().split('/')[0]) {
+        case 'userstory':
+          case 'hierarchicalrequirement':
+          className = 'story';
+          break;
+        case 'defect':
+          className = 'defect';
+          break;
+        case 'task':
+          className = 'task';
+          break;
+        case 'testcase':
+          className = 'test-case';
+          break;
+        case 'defectsuite':
+          className = 'defect-suite';
+          break;
+        case 'testset':
+          className = 'test-set';
+          break;
+        case 'portfolioitem':
+          className = 'portfolioitem';
+          break;
+      }
+
+      return className ? '<span class="artifact-icon icon-' + className + '"></span>' : className;
+    }
+  });
+}());
+
+                (function() {
+  var Ext = window.Ext4 || window.Ext;
+
+  var wsapiMaxPageSize = 200;
+
+  /**
+   * A data store which can retrieve hierarchical artifact data.  In general this class will not be
+   * instantiated directly but will instead be created by Rally.data.wsapi.TreeStoreBuilder:
+   *
+   *      Ext.create('Rally.data.wsapi.TreeStoreBuilder').build({
+   *          models: ['userstory'],
+   *          autoLoad: true,
+   *          enableHierarchy: true
+   *      }).then({
+   *          success: function(store) {
+   *              //use the store
+   *          }
+   *      });
+   *
+   * @experimental
+   */
+  Ext.define('Rally.data.wsapi.TreeStore', {
+
+    // Client Metrics Note: WsapiTreeStore is too low level to record its load begins/ends. The problem is
+    // client metrics can only reliably keep track of one load per component at a time. WsapiTreeStore makes
+    // no guarantee that only one load will happen at a time. It's better to measure the component that is using
+    // the store. All is not lost, the actual data requests that WsapiTreeStore makes *are* measured by client metrics.
+
+    requires: [
+      'Deft.promise.Deferred',
+      'Rally.data.ModelFactory'
+    ],
+    extend: 'Ext.data.TreeStore',
+    alias: 'store.rallywsapitreestore',
+    mixins: {
+      messageable: 'Rally.Messageable',
+      findRecords: 'Rally.data.WsapiFindRecords',
+      recordUpdatable: 'Rally.data.wsapi.RecordUpdatable',
+      clientMetrics: 'Rally.clientmetrics.ClientMetricsRecordable'
+    },
+
+    statics: {
+      wsapiMaxPageSize: wsapiMaxPageSize,
+
+      /**
+       * @property
+       * @private
+       */
+      expandedCollectionNames: {
+        hierarchicalrequirement: ['Children', 'Defects', 'Tasks','TestCases'],
+        defect: ['Tasks','TestCases'],
+        defectsuite: ['Defects','Tasks'],
+        testset: ['Tasks', 'TestCases']
+      },
+
+      /**
+       * @property
+       * @private
+       */
+      childToParentTypeMap: {
+        defect: ['DefectSuite', 'Requirement'],
+        hierarchicalrequirement: ['Parent', 'PortfolioItem'], // NOTE: needs to be added for generic case, but will kill expanding anything but UserStory currently
+        task: ['WorkProduct'],
+        testcase: ['WorkProduct']
+      },
+
+      /**
+       * @property
+       * @private
+       */
+      parentChildTypeMap: {
+        hierarchicalrequirement: [
+          {typePath: 'defect', collectionName: 'Defects'},
+          {typePath: 'hierarchicalrequirement', collectionName: 'Children'}, // NOTE: will not work until childToParentTypeMap has hierarchicalrequirement added in
+          {typePath: 'task', collectionName: 'Tasks'},
+          {typePath: 'testcase', collectionName: 'TestCases'}
+        ],
+        defect: [
+          {typePath: 'task', collectionName: 'Tasks'},
+          {typePath: 'testcase', collectionName: 'TestCases'}
+        ],
+        defectsuite: [
+          {typePath: 'task', collectionName: 'Tasks'},
+          {typePath: 'testcase', collectionName: 'TestCases'}
+        ],
+        testset: [
+          {typePath: 'task', collectionName: 'Tasks'},
+          {typePath: 'testcase', collectionName: 'TestCases', customTraversal: 'TestSet'}
+        ]
+      },
+
+      isParentType: function(parentType) {
+        return _.has(this.parentChildTypeMap, parentType);
+      },
+
+      getChildModelTypePaths: function(parentTypes) {
+        //console.log('gcmtp', parentTypes);
+        return _.reduce(Ext.Array.from(parentTypes), function(childTypes, parentType) {
+          //console.log(childTypes, parentType, this.parentChildTypeMap[parentType]);
+          return _.union(childTypes, _.pluck(this.parentChildTypeMap[parentType], "typePath"));
+        }, [], this);
+      }
+    },
+
+    /**
+     * @cfg {Number}
+     * The starting page to be retrieved
+     */
+    currentPage: 1,
+
+    /**
+     * @cfg {Number}
+     * The number of records to retrieve per page.
+     */
+    pageSize: 25,
+
+    /**
+     * The data scoping to be applied.
+     * @cfg {Object} context
+     * @cfg {String} context.workspace The ref of the workspace to scope to
+     * @cfg {String} context.project The ref of the project to scope to.  Specify null to query the entire specified workspace.
+     * @cfg {Boolean} context.projectScopeUp Whether to scope up the project hierarchy
+     * @cfg {Boolean} context.projectScopeDown Whether to scope down the project hierarchy
+     */
+    context: undefined,
+
+    /**
+     * The wsapi version to use when automatically retrieving a model before loading.
+     * By default the wsapi version of the specified model is used.
+     * @cfg {String/Number} wsapiVersion
+     */
+    wsapiVersion: undefined,
+
+    nodeParam: undefined,
+
+    /**
+     * The model for handling root level and child level items (required)
+     * @cfg {@link Rally.domain.WsapiModel} model
+     */
+    model: undefined,
+
+    /**
+     * The attribute types to render as root items (required)
+     * @cfg {Array} parentTypes
+     */
+    parentTypes: [],
+
+    /**
+     * @cfg {String[]} fetch
+     * The fields to be retrieved using shallowFetch instead of a regular fetch.
+     */
+    fetch: undefined,
+
+    /**
+     * @cfg {Boolean}
+     *
+     * True to set record's 'leaf' property to true when children are present.
+     */
+    enableHierarchy: false,
+
+    /**
+     * @property
+     * @private
+     */
+    childLevelSorters: [],
+
+    /**
+     * @cfg {Boolean}
+     *
+     * False to have expanding nodes ignore Project Scope settings.
+     */
+    expandingNodesRespectProjectScoping: true,
+
+    _getModelFromTypePath: function (typePath) {
+      if (!this.modelTypePathMap) {
+        this.modelTypePathMap = _.transform(this.models, function (r, m) { r[m.typePath] = m; }, {}, this);
+      }
+
+      return this.modelTypePathMap[typePath];
+    },
+
+    constructor: function(config) {
+      this.callParent(arguments);
+      if (this.parentTypes.length === 0 || !this.model) {
+        Ext.Error.raise('You must configure the tree store with parentTypes and a model');
+      }
+
+      if (this.enableHierarchy) {
+        this.childLevelSorters = [
+          {
+          property: 'TaskIndex',
+          direction: 'ASC'
+        },
+        {
+          property: Rally.data.Ranker.getRankField(this.model),
+          direction: 'ASC'
+        }
+        ];
+      }
+      this.fetch = this._buildFetch(this.fetch, this.model);
+
+      this.addEvents(
+        /**
+         * @event error
+         * Fires when a store load comes back with errors
+         * @param {String[]} errors
+         */
+        'error',
+
+        /**
+         * @event currentPageReset
+         * Fires when the store determines that the current page needs to be reset to the first page of results
+         */
+        'currentPageReset',
+
+        'parenttypeschange'
+      );
+
+      this._decorateModels();
+      this.on('beforeexpand', this.onBeforeExpandNode, this);
+      this.on('load', function () {
+        this.expandingNode = null;
+      }, this);
+    },
+
+    onBeforeExpandNode: function (node, eOpts) {
+      this.expandingNode = node;
+      //console.log('expanding', node);
+    },
+
+    isHierarchyEnabled: function() {
+      return this.enableHierarchy === true;
+    },
+
+    setRootNode: function(root, preventLoad) {
+      this.tree.on('rootchange', this._decorateModels, this, {single: true});
+      this.callParent([root, preventLoad || !this.autoLoad]);
+    },
+
+    setParentTypes: function (parentTypes) {
+      this.parentTypes = _.map(Ext.Array.from(parentTypes), function (t) { return t.toLowerCase(); });
+      this.fireEvent('parenttypeschange', this.parentTypes);
+    },
+
+    remove: function(records) {
+      _.invoke(Ext.Array.from(records), 'remove');
+    },
+
+    indexOf: function(record) {
+      return this.getRootNode().indexOf(record);
+    },
+
+    insert: function(index, records) {
+      _.each(Ext.Array.from(records), function(record) {
+        this.getRootNode().insertChild(index, record);
+      }, this);
+    },
+
+    getAllParentFieldTypes: function() {
+      // going from this --> { defect: ['a', 'b'], userstory: ['c'] }
+      // to this         --> ['a', 'b', 'c']
+      // the apply() is necessary, because values() will return an array of arrays,
+      // and union() wants individual arguments
+
+      var parentFieldNames = [];
+      if(this.enableHierarchy) {
+        //console.log('gct', this.getChildTypes());
+        _.each(this.getChildTypes(), function (type) {
+          parentFieldNames = _.union(parentFieldNames, this.getParentFieldTypesByChildType(type.toLowerCase()));
+        }, this);
+      }
+
+      //console.log('pfn', parentFieldNames);
+      var entp = this.getExpandingNodeTypePath().toLowerCase();
+
+      if (entp === 'hierarchicalrequirement') {
+        //console.log('US -> US');
+        parentFieldNames = _.difference(parentFieldNames, ['PortfolioItem']);
+      }
+
+      if (entp.indexOf('portfolioitem') >= 0 && _.contains(this.getChildTypes(), 'hierarchicalrequirement')) {
+        //console.log('PI -> US');
+        parentFieldNames = ['PortfolioItem'];
+      }
+      //console.log('pfn after', parentFieldNames);
+
+      return parentFieldNames;
+    },
+
+    getParentFieldTypesByChildType: function(childType) {
+      //var model = this.model.getArtifactComponentModel(childType);
+      var model = this._getModelFromTypePath(childType);
+      //console.log(childType);
+      return _.filter(this.self.childToParentTypeMap[childType.toLowerCase()], function(field) {
+        if (_.isFunction(this.model.getArtifactComponentModel)) {
+          return this.model.getArtifactComponentModel(field) || model.hasField(field);
+        } else {
+          return model.hasField(field);
+        }
+      }, this);
+    },
+
+    getExpandingNodeTypePath: function () {
+      var r = this.parentTypes[0];
+
+      //console.log('this.expandingNode', this.expandingNode);
+      //console.log('isRoot', this.isRootNode(this.expandingNode));
+      if (this.expandingNode && !this.isRootNode(this.expandingNode)) {
+        r = this.expandingNode.get('_type');
+      }
+
+      //console.log('gentp', r.toLowerCase());
+      return r.toLowerCase();
+    },
+
+    getChildTypes: function() {
+      if(this.enableHierarchy) {
+        if (this.expandingNode && this.isRootNode(this.expandingNode)) {
+          //return _.intersection(this._getModelTypePaths(), this.self.getChildModelTypePaths(this.parentTypes));
+          //console.log('returning parentTypes', this.parentTypes);
+          return this.parentTypes;
+        }
+        //console.log('gct', this.getExpandingNodeTypePath(), this.self.getChildModelTypePaths(this.getExpandingNodeTypePath()), this.self.expandedCollectionNames);
+
+        return this.self.getChildModelTypePaths(Ext.Array.from(this.getExpandingNodeTypePath()));
+      }
+      return [];
+    },
+
+    _getModelTypePaths: function() {
+      if(_.isFunction(this.model.getArtifactComponentModels)) {
+        return _.pluck(this.model.getArtifactComponentModels(),'typePath');
+      }
+      return [this.model.typePath];
+    },
+
+    isRootNode: function(node) {
+      return _.isEmpty(node) || isNaN(node.get('ObjectID'));
+    },
+
+    _getCollectionFetchNames: function() {
+      var collectionFetchNames = [];
+      // Honestly not sure why I need to do this :)
+      if (this.isRootNode(this.expandingNode)) {
+        _.each(Ext.Array.from(this.parentTypes), function (type) {
+          collectionFetchNames = _.union(collectionFetchNames, this.self.expandedCollectionNames[type.toLowerCase()]);
+        }, this);
+      } else {
+        _.each(Ext.Array.from(this.getChildTypes()), function(type) {
+          collectionFetchNames = _.union(collectionFetchNames, _.pluck(this.self.parentChildTypeMap[type], "collectionName"));
+        },this);
+      }
+      return collectionFetchNames;
+    },
+
+    _decorateModels: function() {
+      if (_.isFunction(this.model.getArtifactComponentModels)) {
+        _.each(this.model.getArtifactComponentModels(), Ext.data.NodeInterface.decorate, Ext.data.NodeInterface);
+      }
+    },
+
+    _errors: [],
+    /**
+     * @inheritdoc
+     */
+    load: function(options) {
+      this.recordLoadBegin({description: 'tree store load', component: this.requester});
+
+      this._hasErrors = false;
+
+      this.on('beforeload', function(store, operation) {
+        delete operation.id;
+      }, this, { single: true });
+
+      options = this._configureLoad(options);
+
+      var deferred = Ext.create('Deft.Deferred'),
+      originalCallback = options.callback,
+      me = this;
+
+      options.callback = function (records, operation, success) {
+        me.dataLoaded = true;
+
+        Ext.callback(originalCallback, options.scope || me, arguments);
+        options.callback = originalCallback;
+        if (success) {
+          deferred.resolve(records, operation);
+        } else {
+          deferred.reject(operation);
+        }
+      };
+
+      this.callParent([options]);
+
+
+
+      return deferred.promise;
+    },
+
+    _configureLoad: function(options) {
+      options = options || {};
+
+      if (Ext.isFunction(options)) {
+        options = {callback: options};
+      }
+
+      if (this.isRootNode(options.node)) {
+        this._configureProxy(true);
+        this._configureTopLevelLoad(options);
+      } else {
+        if (!this.enableHierarchy) {
+          Ext.Error.raise('You cannot load child nodes if hierarchy is not enabled.');
+        }
+
+        this._configureProxy(false);
+        this._configureChildLoad(options);
+      }
+
+      options.useShallowFetch = true;
+      options.fetch = options.fetch || this._buildFetch(this.fetch, this.model);
+      //console.log('options', options);
+      //console.log('gENTY', this.getExpandingNodeTypePath());
+      //console.log('pT', this.parentTypes);
+      //console.log(_.contains(this.parentTypes, this.getExpandingNodeTypePath()));
+
+      if (this.expandingNodesRespectProjectScoping ||
+          this.isRootNode(this.expandingNode) ||
+         (_.contains(this.parentTypes, this.getExpandingNodeTypePath()) && !this.expandingNode)) {
+        options.context = this.context;
+      } else {
+        options.context = this.context;
+        if (!options.context) {
+          options.context = Rally.getApp().getContext().getDataContext();
+        }
+        options.context.project = null;
+      }
+      options.requester = this;
+
+      if (options.clearOnLoad === false) {
+        var clearOnLoad = this.clearOnLoad;
+        this.clearOnLoad = false;
+        this.on('load', function() {
+          this.clearOnLoad = clearOnLoad;
+        }, this, {single: true});
+      }
+
+      return options;
+    },
+
+    _configureChildLoad: function(options) {
+      options.filters = this._getChildNodeFilters(options.node);
+      options.sorters = this.childLevelSorters || [{
+        property: Rally.data.Ranker.getRankField(this.model),
+        direction: 'ASC'
+      }];
+    },
+
+    _configureTopLevelLoad: function(options) {
+      options.params = options.params || {};
+      options.params.pagesize = this.pageSize;
+      options.params.start = this.pageSize * (this.currentPage - 1);
+      //options.filter = Rally.data.wsapi.Filter.or(_(this.parentTypes).map(function(type) {
+        //if (this.self.childToParentTypeMap[type]) {
+          //return {
+            //property: this.self.childToParentTypeMap[type],
+            //operator: '=',
+            //value: null
+          //};
+        //} else {
+          //return null;
+        //}
+      //}, this).filter(function (r) { return r !== null; }).value());
+    },
+
+    _getChildNodeFilters: function(node) {
+      var childItemTypes = this.self.parentChildTypeMap[node.get('_type')];
+      var customTraversal = [];
+      if (childItemTypes){
+        _.each(childItemTypes, function(childType) {
+          if (childType.hasOwnProperty('customTraversal')) {
+            customTraversal.push(childType.customTraversal);
+          }
+        });
+      }
+      return [
+        Rally.data.wsapi.Filter.or(_.map(_.union(this.getAllParentFieldTypes(), customTraversal), function(name) {
+        return {
+          property: name,
+          operator: '=',
+          value: node.get('_ref')
+        };
+      }))
+      ];
+    },
+
+    filter: function(filters) {
+      this.filters.addAll(filters);
+      this._resetCurrentPage();
+      this.load();
+    },
+
+    clearFilter: function(suppressEvent) {
+      this._resetCurrentPage();
+      this.filters.clear();
+
+      if (!suppressEvent) {
+        this.load();
+      }
+    },
+
+    getAt: function(id) {
+      return this.getNodeById(id);
+    },
+
+    getTotalCount: function() {
+      return this.totalCount;
+    },
+
+    nextPage: function() {
+      this._setCurrentPage(this.currentPage + 1);
+      this.load();
+    },
+
+    previousPage: function() {
+      this._setCurrentPage(this.currentPage - 1);
+      this.load();
+    },
+
+    loadPage: function(pageNum) {
+      this._setCurrentPage(pageNum);
+      this.load();
+    },
+
+    _setCurrentPage: function(pageNum) {
+      var maxPage = Math.ceil(this.getTotalCount() / this.pageSize);
+      this.currentPage = Math.min(Math.max(pageNum, 1), maxPage);
+    },
+
+    _resetCurrentPage: function() {
+      if (this.dataLoaded === true) {
+        this.fireEvent('currentpagereset');
+        this.currentPage = 1;
+      }
+    },
+
+    _hasErrors: false,
+
+    hasErrors: function() {
+      return this._hasErrors;
+    },
+
+    onProxyLoad: function(operation) {
+      if (operation.error && operation.error.errors && operation.error.errors.length > 0) {
+        this._hasErrors = true;
+        this.fireEvent('error', operation.error.errors);
+      } else {
+        var resultSet = operation.getResultSet();
+        if (resultSet) {
+          _.each(resultSet.records, this._instrumentRecord, this);
+          if (this.isRootNode(operation.node)) {
+            this.totalCount = resultSet.total;
+            if (this.totalCount > 0 && resultSet.count === 0 && this._attemptingToResetCurrentPage !== true) {
+              this._attemptingToResetCurrentPage = true;
+              this._resetCurrentPage();
+              this.load();
+              return;
+            }
+          }
+        }
+      }
+
+      //console.log('onProzyLoad', operation);
+
+      this._attemptingToResetCurrentPage = false;
+
+      if(!this.clearOnLoad && (!operation.node || operation.node === this.getRootNode())) {
+        var recordsById = _.indexBy(operation.getRecords(), function(record) { return record.getId(); });
+        _.each(Ext.clone(operation.node.childNodes), function(childNode) {
+          var record = recordsById[childNode.getId()];
+          if(!record) {
+            childNode.remove(false);
+          } else if(record.get('VersionId') !== childNode.get('VersionId')) {
+
+            var newData = _(record.raw).keys().reduce(function(accum, key) {
+              accum[key] = record.get(key);
+              return accum;
+            }, {});
+
+            childNode.set(newData);
+            childNode.commit();
+          }
+        });
+      }
+
+      this.recordLoadEnd();
+      this.recordLoadBegin({description: 'tree store after load callParent'});
+
+      this.callParent(arguments);
+
+      // For some reason, when expanding top level stories, the bottom level PI becomes the child.
+      // THIS IS A HACK :) --Colin
+      _.each(operation.node.childNodes, function (node) { node.childNodes = []; node.data.loaded = false; });
+
+      this.recordLoadEnd();
+
+      if (this.ownerTree) {
+        this.ownerTree.fireEvent('afterproxyload');
+      }
+    },
+
+    /**
+     * Calls the specified function for each {@link Ext.data.Model record} in the store, walking down the
+     * entire tree.
+     *
+     * @param {Function} fn The function to call. The {@link Ext.data.Model Record} is passed as the first parameter.
+     * Returning `false` aborts and exits the iteration.
+     * @param {Object} [scope] The scope (this reference) in which the function is executed.
+     * Defaults to the current {@link Ext.data.Model record} in the iteration.
+     */
+    each: function(fn, scope) {
+      this._treeWalkingEach(fn, this.tree.root, scope, true);
+    },
+
+    _treeWalkingEach: function(fn, node, scope, ignoreNode) {
+      _.each(node.childNodes, function(childNode) {
+        if (this._treeWalkingEach(fn, childNode, scope) === false) {
+          return false;
+        }
+      }, this);
+
+      return ignoreNode !== true ? fn.call(scope || node, node) : true;
+    },
+
+    /**
+     * Returns the record node by id
+     * @param {Number/String} id the record id or internal id
+     * @return {Ext.data.NodeInterface}
+     */
+    getNodeById: function(id) {
+      return this.callParent(arguments) ||
+        this.findExactRecord(id);
+    },
+
+    /**
+     * Finds a record in the store that matches the given record.
+     * @param {Rally.domain.WsapiModel/Object/String/Number} record Record to match against. Can also be an object with a _ref property or a ref string or an id.
+     */
+    findExactRecord: function(record) {
+      var recordId = Rally.util.Ref.getOidFromRef(record) || record;
+      return this.getRootNode().findChild(this.model.prototype.idProperty, recordId, true);
+    },
+
+    /**
+     * Reload the specified record.  The current store filters will also be applied.
+     * @param {Rally.data.WsapiModel} record the record to reload
+     * @param {Object} options additional options to be applied to the {Ext.data.Operation}.
+     * @param {Function} options.success callback - @deprecated - use returned promise instead
+     * @param {Function} options.failure callback - @deprecated - use returned promise instead
+     * @param {Object} options.scope callback scope - @deprecated - use returned promise instead
+     * @return {Deft.Promise(Rally.data.WsapiModel)}
+     */
+    reloadRecord: function(record, options) {
+      options = options || {};
+      var deferred = Ext.create('Deft.promise.Deferred'),
+      operationConfig = Ext.merge({
+        action: 'read',
+        limit: 1,
+        requester: this,
+        context: this.context,
+        filters: [{
+          property: 'ObjectID',
+          value: record.getId()
+        }],
+        params: {}
+      }, options), modelToLoadFrom, recordTypePath;
+
+      if (_.isFunction(this.model.getArtifactComponentModels)) {
+        recordTypePath = record.self.typePath;
+        if (this.model.getArtifactComponentModel(recordTypePath.toLowerCase())) {
+          modelToLoadFrom = this.model;
+          operationConfig.params.types = recordTypePath;
+        } else {
+          modelToLoadFrom = record.self;
+        }
+      } else {
+        modelToLoadFrom = record.self;
+      }
+
+      operationConfig.useShallowFetch = true;
+      operationConfig.fetch = this.fetch ?
+        _.union(this.fetch, _.pluck(modelToLoadFrom.getAssociationFields(), 'name')) :
+        this._buildFetch(this.fetch, modelToLoadFrom);
+
+      if (record.parentNode === this.getRootNode()) {
+        operationConfig.filters = operationConfig.filters.concat(this.filters.getRange());
+      }
+
+      modelToLoadFrom.getProxy().read(Ext.create('Ext.data.Operation', operationConfig), function(op) {
+        if(op.wasSuccessful() && op.getRecords() && op.getRecords().length) {
+          var record = op.getRecords()[0];
+          this._instrumentRecord(record);
+          Ext.callback(options.success, options.scope, [record]);
+          deferred.resolve(record);
+        } else {
+          Ext.callback(options.failure, options.scope, [op]);
+          deferred.reject(op);
+        }
+      }, this);
+
+      return deferred.promise;
+    },
+
+    /**
+     * Determines if a given record matches the store filters and would be placed at the top level of the tree.
+     * @param {Rally.domain.WsapiModel} record The record to interrogate
+     * @return {Deft.promise.Promise} A promise that resolves to the boolean answer
+     */
+    doesRecordMatchStoreFilters: function(record) {
+      var deferred = Ext.create('Deft.promise.Deferred'),
+      operation = new Ext.data.Operation({
+        action: 'read',
+        fetch: false,
+        params: {
+          query: Rally.data.wsapi.Filter.and(
+            this.filters.getRange().concat([
+            new Rally.data.wsapi.Filter({
+            property: 'ObjectID',
+            operator: '=',
+            value: Rally.util.Ref.getOidFromRef(record)
+          })
+          ])
+          ).toString()
+        },
+        limit: 1,
+        requester: this
+      }),
+      callback = function(operation) {
+        deferred.resolve(!_.isEmpty(operation.getRecords()));
+      };
+
+      this.proxy.setExtraParam('types', this._getTypesForLevel(true));
+
+      this.model.getProxy().read(operation, callback, this);
+      return deferred.promise;
+    },
+
+    doesRecordMatchChildTypes: function(record) {
+      return _(this.getChildTypes()).invoke('toLowerCase').contains(record.self.typePath.toLowerCase());
+    },
+
+    _configureProxy: function (forTopLevel) {
+      this.proxy = this.model.getProxy();
+
+      var types = _.isFunction(this.model.getArtifactComponentModels) ? this._getTypesForLevel(forTopLevel) : this.model.elementName;
+
+      this.proxy.setExtraParam('types', types);
+    },
+
+    _getTypesForLevel: function(forTopLevel) {
+      var types;
+      if (forTopLevel) {
+        types = this.parentTypes.join(',');
+      } else {
+        types = this.getChildTypes().join(',');
+      }
+      return types;
+    },
+
+    _instrumentRecord: function(record) {
+      var leafCount = this._getLeafCount(record),
+      isLeaf = leafCount < 1 || !this.enableHierarchy;
+
+      record.set('leaf', isLeaf);
+      record.set('leafCount', leafCount);
+    },
+
+    _getLeafCount: function(record) {
+      var typePath = record.get('_type').toLowerCase(),
+      expandedCollectionNames = Ext.Array.from(this.self.expandedCollectionNames[typePath]);
+      //console.log(this.self.expandedCollectionNames, typePath, this.self.expandedCollectionNames[typePath]);
+
+      return _.reduce(expandedCollectionNames, function(accumulator, collectionName) {
+        //console.log(collectionName, record.get(collectionName));
+        //console.dir(record);
+        var collectionVal = record.get(collectionName);
+        if (collectionVal && collectionVal.Count) {
+          accumulator += collectionVal.Count;
+        }
+
+        return accumulator;
+      }, 0);
+    },
+
+    _buildFetch: function(fetch, model) {
+      if(fetch === true) {
+        return fetch;
+      }
+      if(!fetch) {
+        fetch = _.pluck(model.getNonCollectionFields(), 'name');
+      }
+      fetch = _.union(_.isArray(fetch) ? fetch : fetch.split(","), ['ObjectID', 'VersionId']);
+      if(this.enableHierarchy && fetch !== true) {
+        fetch = _.union(fetch, this._getCollectionFetchNames(), this.getAllParentFieldTypes());
+      }
+
+      return _.filter(fetch, function (f) { return f !== undefined; });
+    },
+
+    setFetch: function(fetch) {
+      this.fetch = this._buildFetch(fetch);
+    }
+  });
+})();
+
+                (function() {
+  var Ext = window.Ext4 || window.Ext;
+
+  /**
+   * Constructs Rally.data.wsapi.TreeStore instances.
+   *
+   *      Ext.create('Rally.data.wsapi.TreeStoreBuilder').build({
+   *          models: ['userstory'],
+   *          autoLoad: true,
+   *          enableHierarchy: true
+   *      }).then({
+   *          success: function(store) {
+   *              //use the store
+   *          }
+   *      });
+   *
+   * @experimental
+   */
+  Ext.define('Rally.data.wsapi.TreeStoreBuilder', {
+    extend: 'Rally.data.DataStoreBuilder',
+    requires: [
+      'Rally.data.wsapi.TreeStore',
+      'Rally.data.ModelFactory'
+    ],
+
+    build: function(config) {
+      config = _.clone(config || {});
+      config.storeType = 'Rally.data.wsapi.TreeStore';
+
+      return this.callParent([config]);
+    },
+
+    loadModels: function(config) {
+      return this.callParent([config]).then({
+        success: function(models) {
+          var pis = [];
+
+          _.each(models, function (model) {
+            var typePath = model.typePath.toLowerCase();
+
+            if (model.isPortfolioItem()) {
+              Rally.data.wsapi.TreeStore.expandedCollectionNames[typePath] = ['Children'];
+              Rally.data.wsapi.TreeStore.childToParentTypeMap[typePath] = ['Parent'];
+              pis[model.ordinal] = model;
+
+              if (model.isLowestLevelPortfolioItem()) {
+                Rally.data.wsapi.TreeStore.expandedCollectionNames[typePath] = ['UserStories'];
+                Rally.data.wsapi.TreeStore.parentChildTypeMap[typePath] = [{ typePath: 'hierarchicalrequirement', collectionName: 'UserStories' }];
+              }
+            }
+          });
+
+          _.each(pis, function (model) {
+            if (!model) { return; }
+            var typePath = model.typePath.toLowerCase();
+            var pm = pis[model.ordinal + 1];
+
+            if (pm) {
+              Rally.data.wsapi.TreeStore.parentChildTypeMap[pm.typePath.toLowerCase()] = [{ typePath: typePath, collectionName: 'Children' }];
+            }
+          });
+
+          return this._setupTreeModel(this._getComponentModels(models), config);
+        },
+        scope: this
+      });
+    },
+
+    _getComponentModels: function(models) {
+      return _.reduce(models, function(result, model) {
+        if(_.isFunction(model.getArtifactComponentModels)) {
+          return result.concat(model.getArtifactComponentModels());
+        } else {
+          return result.concat(model);
+        }
+      }, []);
+    },
+
+    _setupTreeModel: function(models, config) {
+      var modelsToLoad = [];
+
+      config.parentTypes = this._getParentTypes(models, config);
+      if(config.enableHierarchy) {
+        modelsToLoad = _.filter(this._getChildModelsToLoad(config), function (m) { return m !== undefined; });
+      }
+
+      if (modelsToLoad.length > 0) {
+        return this._loadChildModels(modelsToLoad, models, config);
+      }
+
+      return Deft.Promise.when(models);
+    },
+
+    _getChildModelsToLoad: function(config) {
+      return _.difference(Rally.data.wsapi.TreeStore.getChildModelTypePaths(config.parentTypes), config.parentTypes);
+      //return [];
+    },
+
+    _loadChildModels: function(modelsToLoad, loadedModels, config) {
+      return Rally.data.ModelFactory.getModels({
+        context: config.context,
+        types: modelsToLoad,
+        requester: config.requester || this
+      }).then({
+        success: function(newModels) {
+          return _.union(loadedModels, _.values(newModels));
+        }
+      });
+    },
+
+    _getParentTypes: function(models, config) {
+      var parentTypes = _.pluck(models, 'typePath');
+
+      if (config.enableHierarchy) {
+        parentTypes = _.filter(parentTypes, Rally.data.wsapi.TreeStore.isParentType, Rally.data.wsapi.TreeStore);
+      }
+
+      return parentTypes;
+    }
+  });
+})();
+
+                (function() {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * Abstract class to handle expanding / collapsing for banner widgets
+     */
+    Ext.define('Rally.apps.releasetracking.statsbanner.BannerWidget', {
+        extend: 'Ext.Component',
+        alias: 'widget.bannerwidget',
+
+        config: {
+            expanded: true
+        },
+
+        cls: 'stat-panel',
+
+        data: {},
+
+        tpl: [
+            '<div class="expanded-widget"></div>',
+            '<div class="collapsed-widget"></div>'
+        ],
+
+        onRender: function() {
+            if (this.expanded) {
+                this.removeCls('collapsed');
+            } else {
+                this.addCls('collapsed');
+            }
+            this.callParent(arguments);
+        },
+
+        expand: function() {
+            this.removeCls('collapsed');
+            this.setExpanded(true);
+        },
+
+        collapse: function() {
+            this.addCls('collapsed');
+            this.setExpanded(false);
+        }
+    });
+})();
+
+                (function() {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * gauge chart for stats banner
+     * abstract class
+     */
+    Ext.define('Rally.apps.releasetracking.statsbanner.Gauge', {
+        extend: 'Rally.apps.releasetracking.statsbanner.BannerWidget',
+        alias:'widget.statsbannergauge',
+
+        requires: [
+            'Rally.ui.chart.Chart',
+            'Rally.util.Timebox',
+            'Rally.util.Colors'
+        ],
+
+        config: {
+            context: null,
+            store: null
+        },
+
+        onDataChanged: Ext.emptyFn,
+        getChartEl: Ext.emptyFn,
+        _getChartConfig: Ext.emptyFn,
+
+        _tzOffsetPromises: {},
+
+        initComponent: function() {
+            this.mon(this.store, 'datachanged', this.onDataChanged, this);
+            this.callParent(arguments);
+        },
+
+        expand: function() {
+            this.callParent();
+            if (this.chart) {
+                this.chart.doLayout();
+            } else {
+                this._addChart(this._getChartConfig({}));
+            }
+        },
+
+        onRender: function() {
+            this.callParent(arguments);
+            if (!this.getContext().getTimeboxScope().getRecord()) {
+                this._addEmptyChart();
+            }
+        },
+
+        _addEmptyChart: function() {
+            this._cleanupChart();
+            this._addChart({
+                chartData: {
+                    series: [{
+                        data: [
+                            {
+                                name: '',
+                                y: 100,
+                                color: Rally.util.Colors.grey1
+                            }
+                        ]
+                    }]
+                }
+            });
+        },
+
+        _cleanupChart: function () {
+            if (this.chart) {
+                this.chart.destroy();
+                delete this.chart;
+            }
+        },
+
+        onDestroy: function () {
+            this._cleanupChart();
+            this.callParent(arguments);
+        },
+
+        onResize: function() {
+            if (this.chart && !this.getEl().up('.stats-banner.collapsed')) {
+                this.chart.updateLayout();
+            }
+            this.callParent(arguments);
+        },
+
+        refreshChart: function(chartConfig) {
+            Ext.suspendLayouts();
+            this._cleanupChart();
+            if (this.rendered && this.expanded) {
+                this._addChart(chartConfig);
+            }
+            Ext.resumeLayouts();
+            this.fireEvent('ready', this);
+        },
+
+        _addChart: function(chartConfig) {
+            var height = 62;
+            this.chart = Ext.create('Rally.ui.chart.Chart', Ext.apply({
+                loadMask: false,
+                renderTo: this.getChartEl(),
+                cls: 'gauge',
+                chartConfig: {
+                    chart: {
+                        backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                        defaultSeriesType: 'pie',
+                        height: height,
+                        spacingTop: 0,
+                        spacingRight: 0,
+                        spacingBottom: 0,
+                        spacingLeft: 0
+                    },
+                    plotOptions: {
+                        pie: {
+                            borderWidth: 0,
+                            center: ['50%', '50%'],
+                            dataLabels: {
+                                enabled: false
+                            },
+                            size: height - 4,
+                            innerSize: height - 14,
+                            enableMouseTracking: false, //turns off chart hover, but for tooltips you'll need this on
+                            shadow: false
+                        }
+                    },
+                    title: '',
+                    tooltip: {
+                        enabled: false
+                    }
+                }
+            }, chartConfig));
+        },
+
+        getTimeboxData: function() {
+            return this._getTZOffset().then({
+                success: function (tzOffset) {
+                    var timebox = this.getContext().getTimeboxScope().getRecord();
+                    if(timebox) {
+                        return Rally.util.Timebox.getCounts(
+                            timebox.get('ReleaseStartDate'),
+                            timebox.get('ReleaseDate'),
+                            this.getContext().getWorkspace().WorkspaceConfiguration.WorkDays,
+                            tzOffset);
+                    } else {
+                        return {
+                            remaining: 0,
+                            workdays: 0
+                        };
+                    }
+                },
+                scope: this
+            });
+        },
+
+        _getTZOffset: function() {
+            var projectRef = Rally.util.Ref.getRelativeUri(this.getContext().getProject());
+            if (!Ext.isDefined(this._tzOffsetPromises[projectRef])) {
+                var deferred = this._tzOffsetPromises[projectRef] = Ext.create('Deft.Deferred');
+                Rally.environment.getIoProvider().httpGet({
+                    url: Rally.environment.getServer().getWsapiUrl() + '/iteration',
+                    params: {
+                        includeSchema: true,
+                        pagesize:1,
+                        fetch: false,
+                        project: projectRef
+                    },
+                    success: function(results) {
+                        deferred.resolve((results.Schema.properties.EndDate.format.tzOffset || 0) / 60);
+                    },
+                    requester: this,
+                    scope: this
+                });
+            }
+            return this._tzOffsetPromises[projectRef];
+        },
+
+        getAcceptanceData: function () {
+            var acceptanceData = {
+                accepted: 0,
+                total: 0
+            };
+
+            _.each(this.store.getRange(), function (rec) {
+              acceptanceData.accepted += rec.get('AcceptedLeafStoryPlanEstimateTotal');
+              acceptanceData.total += rec.get('LeafStoryPlanEstimateTotal');
+            });
+
+            return Deft.Promise.when(acceptanceData);
+        },
+
+        getEstimatedData: function () {
+            var acceptanceData = {
+                accepted: 0,
+                total: 0
+            };
+
+            _.each(this.store.getRange(), function (rec) {
+              acceptanceData.accepted += rec.get('LeafStoryCount') - rec.get('UnEstimatedLeafStoryCount');
+              acceptanceData.total += rec.get('LeafStoryCount');
+            });
+
+            return Deft.Promise.when(acceptanceData);
+        },
+
+        _getScheduleStates: function () {
+            if (this._scheduleStates) {
+                return Deft.Promise.when(this._scheduleStates);
+            } else {
+                return this.store.model.getField('ScheduleState').getAllowedValueStore().load().then({
+                    success: function (records) {
+                        this._scheduleStates = _.map(records, function (record) {
+                            return record.get('StringValue');
+                        });
+                        return this._scheduleStates;
+                    },
+                    scope: this,
+                    requester: this
+                });
+            }
+        }
+    });
+})();
+
+                (function() {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * shows planned velocity for timebox
+     */
+    Ext.define('Rally.apps.releasetracking.statsbanner.PlannedVelocity', {
+        extend: 'Rally.apps.releasetracking.statsbanner.Gauge',
+        alias:'widget.statsbannerplannedvelocity',
+        require: ['Rally.util.Colors'],
+
+        tpl: [
+            '<div class="expanded-widget">',
+            '<div class="stat-title">Planned Velocity</div>',
+            '<div class="stat-metric">',
+            '<div class="metric-chart"></div>',
+            '<div class="metric-chart-text percent-offset">',
+            '{percentage}<div class="metric-percent">%</div>',
+            '</div>',
+            '<div class="metric-subtext">{estimate} of {plannedVelocity} {unit}</div>',
+            '</div>',
+            '</div>',
+            '<div class="collapsed-widget">',
+            '<div class="stat-title">Planned Velocity</div>',
+            '<div class="stat-metric">{percentage}<span class="metric-percent">%</span></div>',
+            '</div>'
+        ],
+
+        config: {
+            data: {
+                percentage: 0,
+                estimate: 0,
+                plannedVelocity: 0,
+                unit: ''
+            }
+        },
+
+        onDataChanged: function() {
+            var renderData = this._getRenderData();
+            this.update(renderData);
+
+            this.refreshChart(this._getChartConfig(renderData));
+        },
+
+        getChartEl: function() {
+            return this.getEl().down('.metric-chart');
+        },
+
+        _getTimeboxUnits: function() {
+            return this.getContext().getTimeboxScope().getType() === 'iteration' ?
+                this.getContext().getWorkspace().WorkspaceConfiguration.IterationEstimateUnitName :
+                this.getContext().getWorkspace().WorkspaceConfiguration.ReleaseEstimateUnitName;
+        },
+
+        _getRenderData: function() {
+            var estimate = _.reduce(this.store.getRange(), function(accum, record) {
+                return accum + (record.get('PreliminaryEstimate') && record.get('PreliminaryEstimate').Value) || 0;
+            }, 0);
+
+            estimate = Math.round(estimate * 100) / 100;
+
+            var timeboxRecord = this.getContext().getTimeboxScope().getRecord();
+
+            var plannedVelocity = (timeboxRecord && timeboxRecord.get('PlannedVelocity')) || 0;
+
+            var percentage = plannedVelocity === 0 ? 0 : Math.round(estimate / plannedVelocity * 100);
+
+            var data = {
+                estimate: estimate,
+                percentage: percentage,
+                plannedVelocity: plannedVelocity,
+                unit: this._getTimeboxUnits()
+            };
+
+            return data;
+        },
+
+        _getChartConfig: function(renderData) {
+            var percentage = renderData.percentage,
+                percentagePlanned = percentage % 100 || 100,
+                color = Rally.util.Colors.cyan_med,
+                secondaryColor = Rally.util.Colors.grey1;
+
+            if (percentage > 100) {
+                color = Rally.util.Colors.blue;
+                secondaryColor = Rally.util.Colors.cyan;
+            } else if (percentage > 70) {
+                color = Rally.util.Colors.cyan;
+            } else if (percentage === 0) {
+                color = Rally.util.Colors.grey1;
+            }
+
+            return {
+                chartData: {
+                    series: [{
+                        data: [
+                            {
+                                name: 'Planned Estimate Total',
+                                y: percentagePlanned,
+                                color: color
+                            },
+                            {
+                                name: '',
+                                y: 100 - percentagePlanned,
+                                color: secondaryColor
+                            }
+                        ]
+                    }]
+                }
+            };
+        }
+    });
+})();
+
+                (function() {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * shows days remaining for timebox
+     */
+    Ext.define('Rally.apps.releasetracking.statsbanner.TimeboxEnd', {
+        extend: 'Rally.apps.releasetracking.statsbanner.Gauge',
+        alias:'widget.statsbannertimeboxend',
+        requires: [
+            'Rally.util.Timebox',
+            'Rally.util.Colors'
+        ],
+
+        tpl: [
+            '<div class="expanded-widget">',
+            '<div class="stat-title">{type} End</div>',
+            '<div class="stat-metric">',
+            '<div class="metric-chart"></div>',
+            '<div class="metric-chart-text">',
+            '{remaining}',
+            '</div>',
+            '<div class="metric-subtext">days left of {workdays}</div>',
+            '</div>',
+            '</div>',
+            '<div class="collapsed-widget">',
+            '<div class="stat-title">{type} End</div>',
+            '<div class="stat-metric">{remaining}<span class="stat-metric-secondary"> days</span></div>',
+            '</div>'
+        ],
+
+        config: {
+            data: {
+                type: 'Release',
+                remaining: 0,
+                workdays: 0
+            }
+        },
+
+        onDataChanged: function() {
+            Deft.Promise.all([
+                    this.getAcceptanceData(),
+                    this.getTimeboxData()
+                ]).then({
+                    success: this._onDataAssembled,
+                    scope: this
+                });
+        },
+
+        getChartEl: function() {
+            return this.getEl().down('.metric-chart');
+        },
+
+        _getRenderData: function() {
+            var data = _.merge(
+                {type: Ext.String.capitalize(this.getContext().getTimeboxScope().getType())},
+                this.acceptanceData,
+                this.timeboxData
+            );
+
+            return data;
+        },
+
+        _onDataAssembled: function (results) {
+            this.acceptanceData = results[0];
+            this.timeboxData = results[1];
+
+            var renderData = this._getRenderData();
+            this.update(renderData);
+
+            this.refreshChart(this._getChartConfig(renderData));
+        },
+
+        _getChartConfig: function (renderData) {
+            var decimal = renderData.remaining / renderData.workdays,
+                percentLeft = decimal < 1 ? Math.round(decimal * 100) : 0,
+                color = Rally.util.Colors.cyan;
+
+            if (renderData.total === 0) {
+                color = Rally.util.Colors.grey1;
+            } else if (percentLeft === 0) {
+                color = renderData.accepted === renderData.total ? Rally.util.Colors.lime : Rally.util.Colors.blue;
+            } else if (percentLeft <= 25) {
+                color = Rally.util.Colors.blue;
+            }
+
+            return {
+                chartData: {
+                    series: [{
+                        data: [
+                            {
+                                name: 'Days Done',
+                                y: 100 - percentLeft,
+                                color: color
+                            },
+                            {
+                                name: 'Days Left',
+                                y: percentLeft,
+                                color: Rally.util.Colors.grey1
+                            }
+                        ]
+                    }]
+                }
+            };
+        }
+    });
+})();
+
+                (function() {
+    var Ext = window.Ext4 || window.Ext;
+
+    Ext.define('Rally.apps.releasetracking.statsbanner.popover.LateStories', {
+      alias: 'widget.latestoriespopover',
+      extend: 'Rally.ui.popover.Popover',
+
+      constructor: function (config) {
+        config.items = [
+          {
+            xtype: 'rallygrid',
+            model: 'User Story',
+            columnCfgs: ['FormattedID', 'Name', 'Feature', 'Plan Estimate', 'Iteration', 'Release', 'Project'],
+            pagingToolbarCfg: {
+              pageSizes: [5, 10, 15]
+            },
+            storeConfig: {
+              pageSize: 5,
+              filters: config.filters
+            },
+            width: 600
+            //height: ''
+          }
+        ];
+
+        this.callParent(arguments);
+      }
+    });
+    /**
+     * shows defects active for timebox
+     */
+    Ext.define('Rally.apps.releasetracking.statsbanner.LateStories', {
+        extend: 'Rally.apps.releasetracking.statsbanner.BannerWidget',
+        alias:'widget.statsbannerlatestories',
+        requires: [],
+
+        config: {
+            context: null,
+            store: null,
+            data: {
+                activeCount: 0
+            }
+        },
+
+        tpl: [
+            '<div class="expanded-widget">',
+            '<span style="cursor: pointer">',
+            '<div class="stat-title">Late Stories</div>',
+            '<div class="stat-metric">',
+            '<div class="metric-icon icon-story"></div>{activeCount}',
+            '<div class="stat-secondary">Late</div>',
+            '</span>',
+            '</div>',
+            '</div>',
+            '<div class="collapsed-widget">',
+            '<span class="metric-icon icon-story"></span>',
+            '<div class="stat-title">Late Stories</div>',
+            '<div class="stat-metric">{activeCount}</div>',
+            '</div>'
+        ],
+
+        initComponent: function() {
+            this.mon(this.store, 'datachanged', this.onDataChanged, this);
+            this.on('render', function () {
+              this.getEl().on('click', function () {
+                this._onClickLateStories();
+              }, this);
+            }, this);
+            this.callParent(arguments);
+        },
+
+        onDataChanged: function() {
+            this.update(this._getRenderData());
+            this.fireEvent('ready', this);
+        },
+
+        _getLateStoriesCount: function() {
+            var lateStories = 0;
+            _.each(this.store.getRange(), function(record){
+              lateStories += record.get('LateChildCount');
+            }, this);
+            return lateStories;
+        },
+
+        _getRenderData: function() {
+            return {activeCount: this._getLateStoriesCount()};
+        },
+
+        _onClickLateStories: function() {
+          var record = this.store.getAt(0);
+          //record = _(this.store.getRange()).filter(function (r) { return r.data.UserStories !== ''; }).first();
+          console.dir(record);
+
+          var
+            filters = this._filterPopover(record.data),
+            target = this.getEl();
+            //targetSelector = this.targetSelector;
+
+          var reloadStoreCallback;
+          Ext.create('Rally.apps.releasetracking.statsbanner.popover.LateStories', {
+            target: target,
+            autoShow: false,
+            record: record,
+            filters: filters
+            //headerTitle: 'User Stories Assigned to Later Releases or Iteration',
+          }).show();
+        },
+
+        _filterPopover: function(record) {
+          return [
+            {
+              property: 'Feature.Release.Name',
+              operator: '=',
+              value: record.Release.Name
+            },
+            {
+              property: 'DirectChildrenCount',
+              operator: '=',
+              value: 0
+            },
+            Rally.data.wsapi.Filter.or([
+              {
+                property: 'Iteration.EndDate',
+                operator: '>',
+                value: record.Release.ReleaseDate
+              },
+              {
+                property: 'Release.ReleaseDate',
+                operator: '>',
+                value: record.Release.ReleaseDate
+              }
+            ])
+          ];
+        }
+    });
+})();
+
+                (function() {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * shows accepted work units for timebox
+     */
+    Ext.define('Rally.apps.releasetracking.statsbanner.Accepted', {
+        extend: 'Rally.apps.releasetracking.statsbanner.Gauge',
+        alias:'widget.statsbanneraccepted',
+        requires: ['Rally.util.Colors'],
+
+        tpl: [
+            '<div class="expanded-widget">',
+            '<div class="stat-title">Accepted Stories</div>',
+            '<div class="stat-metric">',
+            '<div class="metric-chart"></div>',
+            '<div class="metric-chart-text percent-offset">',
+            '{percentage}<div class="metric-percent">%</div>',
+            '</div>',
+            '<div class="metric-subtext">{accepted} of {total} {unit}</div>',
+            '</div>',
+            '</div>',
+            '<div class="collapsed-widget">',
+            '<div class="stat-title">Accepted Stories</div>',
+            '<div class="stat-metric">{percentage}<span class="metric-percent">%</span></div>',
+            '</div>'
+        ],
+
+        config: {
+            data: {
+                percentage: 0,
+                accepted: 0,
+                total: 0,
+                unit: ''
+            }
+        },
+
+        onDataChanged: function () {
+            Deft.Promise.all([
+                    this.getAcceptanceData(),
+                    this.getTimeboxData()
+                ]).then({
+                    success: this._onDataAssembled,
+                    scope: this
+                });
+        },
+
+        getChartEl: function() {
+            return this.getEl().down('.metric-chart');
+        },
+
+        _getTimeboxUnits: function() {
+            return this.getContext().getTimeboxScope().getType() === 'iteration' ?
+                    this.getContext().getWorkspace().WorkspaceConfiguration.IterationEstimateUnitName :
+                    this.getContext().getWorkspace().WorkspaceConfiguration.ReleaseEstimateUnitName;
+        },
+
+        _getRenderData: function() {
+            var data = _.merge(
+                {unit: this._getTimeboxUnits()},
+                this.acceptanceData,
+                this.timeboxData
+            );
+
+            data.accepted = Ext.util.Format.round(data.accepted, 2);
+            data.total = Ext.util.Format.round(data.total, 2);
+            data.percentage = Math.round((data.accepted / data.total) * 100) || 0;
+
+            return data;
+        },
+
+        _onDataAssembled: function (results) {
+            this.acceptanceData = results[0];
+            this.timeboxData = results[1];
+
+            var renderData = this._getRenderData();
+            this.update(renderData);
+
+            this.refreshChart(this._getChartConfig(renderData));
+        },
+
+        _getChartConfig: function(renderData) {
+            var color = Rally.util.Colors.cyan,
+                daysRemaining = renderData.remaining / renderData.workdays,
+                percentage = renderData.percentage;
+
+            if (percentage === 100) {
+                color = Rally.util.Colors.lime;
+            } else if (daysRemaining === 0) {
+                color = Rally.util.Colors.blue;
+            }
+
+            return {
+                chartData: {
+                    series: [{
+                        data: [
+                            {
+                                name: 'Accepted Stories',
+                                y: percentage,
+                                color: color
+                            },
+                            {
+                                name: '',
+                                y: 100 - percentage,
+                                color: Rally.util.Colors.grey1
+                            }
+                        ]
+                    }]
+                }
+            };
+        }
+    });
+})();
+
+                (function() {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * shows accepted work units for timebox
+     */
+    Ext.define('Rally.apps.releasetracking.statsbanner.EstimatedStories', {
+        extend: 'Rally.apps.releasetracking.statsbanner.Gauge',
+        alias:'widget.statsbannerestimatedstories',
+        requires: ['Rally.util.Colors'],
+
+        tpl: [
+            '<div class="expanded-widget">',
+            '<div class="stat-title">Estimated Stories</div>',
+            '<div class="stat-metric">',
+            '<div class="metric-chart"></div>',
+            '<div class="metric-chart-text percent-offset">',
+            '{percentage}<div class="metric-percent">%</div>',
+            '</div>',
+            '<div class="metric-subtext">{accepted} of {total} {unit}</div>',
+            '</div>',
+            '</div>',
+            '<div class="collapsed-widget">',
+            '<div class="stat-title">Estimated Stories</div>',
+            '<div class="stat-metric">{percentage}<span class="metric-percent">%</span></div>',
+            '</div>'
+        ],
+
+        config: {
+            data: {
+                percentage: 0,
+                accepted: 0,
+                total: 0,
+                unit: ''
+            }
+        },
+
+        onDataChanged: function () {
+            Deft.Promise.all([
+                    this.getEstimatedData(),
+                    this.getTimeboxData()
+                ]).then({
+                    success: this._onDataAssembled,
+                    scope: this
+                });
+        },
+
+        getChartEl: function() {
+            return this.getEl().down('.metric-chart');
+        },
+
+        _getTimeboxUnits: function() {
+            return '';
+        },
+
+        _getRenderData: function() {
+            var data = _.merge(
+                {unit: this._getTimeboxUnits()},
+                this.acceptanceData,
+                this.timeboxData
+            );
+
+            data.accepted = Ext.util.Format.round(data.accepted, 2);
+            data.total = Ext.util.Format.round(data.total, 2);
+            data.percentage = Math.round((data.accepted / data.total) * 100) || 0;
+
+            return data;
+        },
+
+        _onDataAssembled: function (results) {
+            this.acceptanceData = results[0];
+            this.timeboxData = results[1];
+
+            var renderData = this._getRenderData();
+            this.update(renderData);
+
+            this.refreshChart(this._getChartConfig(renderData));
+        },
+
+        _getChartConfig: function(renderData) {
+            var color = Rally.util.Colors.cyan,
+                daysRemaining = renderData.remaining / renderData.workdays,
+                percentage = renderData.percentage;
+
+            if (percentage === 100) {
+                color = Rally.util.Colors.lime;
+            } else if (daysRemaining === 0) {
+                color = Rally.util.Colors.blue;
+            }
+
+            return {
+                chartData: {
+                    series: [{
+                        data: [
+                            {
+                                name: 'Accepted Stories',
+                                y: percentage,
+                                color: color
+                            },
+                            {
+                                name: '',
+                                y: 100 - percentage,
+                                color: Rally.util.Colors.grey1
+                            }
+                        ]
+                    }]
+                }
+            };
+        }
+    });
+})();
+
+                (function () {
+    var Ext = window.Ext4 || window.Ext;
+
+    Ext.define("Rally.apps.releasetracking.statsbanner.iterationprogresscharts.IterationProgressMixin", {
+        requires: [
+            "Rally.ui.chart.Chart"
+        ],
+
+        _configureYAxis: function(ticks, axis) {
+
+            var intervalY = (this.chartComponentConfig.chartConfig.yAxis[axis].max - 0) / (ticks - 1);
+            var ticksY = [];
+            for (var i = 0; i < ticks; i++) {
+                ticksY.push(i * intervalY);
+            }
+            this.chartComponentConfig.chartConfig.yAxis[axis].tickPositions = ticksY;
+        },
+
+        _configureYAxisIntervals: function () {
+            var ticks = 5; // not much chart space, limit to 5
+            this._configureYAxis(ticks, 0);
+            if(this.chartType === "burndown") { // cumulative flow only has y axis 0
+                this._configureYAxis(ticks, 1);
+            }
+        },
+
+        _getElementValue: function (element) {
+            if (element.textContent !== undefined) {
+                return element.textContent;
+            }
+            return element.text;
+        },
+        
+        _getStringValues: function (elements) {
+            var i;
+            var strings = [];
+            for (i = 0; i < elements.length; i++) {
+                strings.push(this._getElementValue(elements[i]));
+            }
+            return strings;
+        },
+
+        _getNumberValues: function (elements) {
+            var i;
+            var numbers = [];
+            for (i = 0; i < elements.length; i++) {
+                if(this._getElementValue(elements[i])) {
+                    numbers.push(this._getElementValue(elements[i]).split(' ')[0] * 1);
+                } else {
+                    numbers.push(0);
+                }
+
+            }
+            return numbers;
+        },
+
+        _computeMaxYAxisValue: function(series) {
+            var i, j, max = 0.0;
+            // sum each day's values and find the largest sum
+            for(i=0; i < series[0].data.length; i++) {
+                var val = 0.0;
+                for(j=0; j < series.length; j++) {
+                    // if is for insurance, _should_ always be true
+                    if(series[j].data.length === series[0].data.length) {
+                        val += series[j].data[i];
+                    }
+                }
+                if(val > max) {
+                    max = val;
+                }
+            }
+            max = Math.ceil(max / 4) * 4;  // round up to multiple of 4 so we will create 5 integral tick marks
+
+            return (max === 0) ? 4 : max;
+        },
+
+        _createChartDatafromXML: function (xml) {
+            var parseXml;
+
+            if (typeof window.DOMParser !== "undefined") {
+                parseXml = function (xmlStr) {
+                    return ( new window.DOMParser() ).parseFromString(xmlStr, "text/xml");
+                };
+            } else if (typeof window.ActiveXObject !== "undefined" &&
+                new window.ActiveXObject("Microsoft.XMLDOM")) {
+                parseXml = function (xmlStr) {
+                    var xmlDoc = new window.ActiveXObject("Microsoft.XMLDOM");
+                    xmlDoc.async = "false";
+                    xmlDoc.loadXML(xmlStr);
+                    return xmlDoc;
+                };
+            } else {
+                throw new Error("No XML parser found");
+            }
+
+            return parseXml(xml);
+        }
+    });
+}());
+
+                (function () {
+    var Ext = window.Ext4 || window.Ext;
+
+    Ext.define("Rally.apps.releasetracking.statsbanner.iterationprogresscharts.IterationProgressChart", {
+            requires: [
+                "Rally.ui.chart.Chart"
+            ],
+
+            chartComponentConfig: {
+               xtype: "rallychart",
+               suppressClientMetrics: true /* keeps rallychart::lookback query time from displaying in client metrics */
+            }
+        });
+}());
+
+                (function(){
+    var Ext = window.Ext4 || window.Ext;
+
+    Ext.define("Rally.apps.releasetracking.statsbanner.iterationprogresscharts.PieChart", {
+        alias: "widget.statsbannerpiechart",
+        extend: "Ext.Container",
+        requires: [
+            'Rally.ui.chart.Chart'
+        ],
+        mixins: {
+            recordable: 'Rally.clientmetrics.ClientMetricsRecordable'
+        },
+
+        currentScope: undefined,
+        height: undefined,
+        width: undefined,
+        displayTitle: 'Pie',
+        config: {
+            context: null
+        },
+
+        initComponent: function() {
+            this.callParent(arguments);
+
+            if (this._storyStates === undefined) {
+                Rally.data.ModelFactory.getModels({
+                    types: ['UserStory'],
+                    context: this.getContext(),
+                    scope: this,
+                    requester: this,
+                    success: function(models){
+                        models.UserStory.getField('ScheduleState').getAllowedValueStore().load({
+                            callback: this._createStateMap,
+                            requester: this,
+                            scope: this
+                        });
+                    }
+                });
+            } else {
+                this._loadArtifacts();
+            }
+        },
+
+        _createStateMap: function(allowedValues) {
+            var stateMap = ['Defined', 'In-Progress', 'Completed'],
+                stateMapIndex = 0,
+                storyStates = {};
+
+            _.each(allowedValues, function(value) {
+                var state = value.data.StringValue;
+                if (state) {
+                    if (state === stateMap[stateMapIndex + 1]) {
+                        stateMapIndex++;
+                    }
+                    storyStates[state] = stateMap[stateMapIndex];
+                }
+            });
+
+            this._storyStates = storyStates;
+            this._loadArtifacts();
+        },
+
+        _loadArtifacts: function() {
+            this._chartData = [];
+            this._childChartData = [];
+
+            this.store = Ext.create('Rally.data.wsapi.artifact.Store', {
+                models: ['PortfolioItem/Feature'],
+                fetch: ['UserStories', 'PreliminaryEstimate', 'Value', 'FormattedID', 'State[Ordinal;Name]', 'LeafStoryCount', 'Name',
+                        'PlannedEndDate', 'PlannedStartDate', 'ActualStartDate', 'ActualEndDate', 'PercentDoneByStoryPlanEstimate'],
+                filters: [this.context.getTimeboxScope().getQueryFilter()],
+                context: this.context.getDataContext(),
+                limit: Infinity,
+                requester: this,
+                autoLoad: true,
+                listeners: {
+                    load: this._loadChildCollections,
+                    scope: this
+                }
+            });
+        },
+
+        _loadChildCollections: function() {
+            var records = this.store.getRange();
+            var promises = [];
+            _.each(records, function(record) {
+                if (record.get('UserStories') && record.get('UserStories').Count) {
+                  var store = Ext.create('Rally.data.wsapi.Store', {
+                      model: 'UserStory',
+                      fetch: ['FormattedID', 'Name', 'ScheduleState', 'Blocked', 'BlockedReason', 'Feature'],
+                      filters: [{
+                        property: 'Feature',
+                        value: record.get('_ref')
+                      }, {
+                        property: 'DirectChildrenCount',
+                        value: 0
+                      }]
+                    });
+                    promises.push(store.load({
+                        requester: this,
+                        callback: function(stories) {
+                            record.get('UserStories').Results = stories;
+                        }
+                    }));
+                }
+            });
+
+            if (promises.length > 0) {
+                Deft.Promise.all(promises).then({
+                    success: this._onAllDataLoaded,
+                    scope: this
+                });
+            } else {
+                this._onAllDataLoaded();
+            }
+        },
+
+        _onAllDataLoaded: function() {
+            _.each(this.store.getRange(), function(record) {
+                var stories = record.get('UserStories');
+                var relatedCount = record.get('LeafStoryCount');
+                var planEstimate = (record.get('PreliminaryEstimate') && record.get('PreliminaryEstimate').Value) || 1;
+                var pointSizeForChildren = (planEstimate / relatedCount) || 1;
+                var nullPointString = 'No stories.';
+
+                //console.log(record.get('Name'), relatedCount, planEstimate, pointSizeForChildren);
+                this._addPointForTopLevelItem(record, relatedCount);
+
+                if (relatedCount === 0) {
+                    this._childChartData.push({
+                        name: nullPointString,
+                        y: planEstimate,
+                        color: '#FFF',
+                        rallyName: null,
+                        status: '',
+                        blocked: false,
+                        blockedReason: '',
+                        hasChildren: false,
+                        relatedCount: 0,
+                        ref: null,
+                        parentFormattedID: null
+                    });
+                } else {
+                  if (stories && stories.Results) {
+                    _.each(stories.Results, function(story) {
+                      this._addPointForChildItem(story, record.get('FormattedID'), pointSizeForChildren);
+                    }, this);
+                  }
+                }
+
+            }, this);
+
+            var chart = this._createChartConfig();
+            this.add(chart);
+
+            this.recordLoadEnd();
+        },
+
+        _onLoad: function() {
+            this.fireEvent('contentupdated', this);
+            this.fireEvent('ready', this);
+            if (Rally.BrowserTest) {
+                Rally.BrowserTest.publishComponentReady(this);
+            }
+        },
+
+        _createChartConfig: function(overrides) {
+            var clickChartHandler = _.isFunction(this.clickHandler) ? this.clickHandler : Ext.emptyFn;
+            var height = this.height;
+            return Ext.Object.merge({
+                xtype: 'rallychart',
+                loadMask: false,
+                updateAfterRender: Ext.bind(this._onLoad, this),
+
+                chartData: {
+                    series: [
+                        {
+                            type:'pie',
+                            name: 'Parents',
+                            data: this._chartData,
+                            size: height,
+                            allowPointSelect: false,
+                            dataLabels: {
+                                enabled: false
+                            }
+                        },
+                        {
+                            type:'pie',
+                            name: 'Children',
+                            data: this._childChartData,
+                            size: height,
+                            innerSize: 0.8 * height,
+                            allowPointSelect: false,
+                            dataLabels: { enabled: false }
+                        }
+                    ]
+                },
+
+                chartConfig: {
+                    chart: {
+                        type: 'pie',
+                        height: height,
+                        width: this.width,
+                        spacingTop: 0,
+                        spacingRight: 0,
+                        spacingBottom: 0,
+                        spacingLeft: 0,
+                        events: {
+                            click: clickChartHandler
+                        }
+                    },
+                    subtitle: {
+                        useHTML:true, //class refactor
+                        text: '<table align="center" class="pie-chart-legend"><tr><td><span class="legend-swatch defined-sample-swatch"></span><span>Defined</td>' +
+                              '<td><span class="legend-swatch in-progress-sample-swatch"></span>In-Progress</td>'+
+                              '<td><span class="legend-swatch completed-sample-swatch"></span>Completed</td>'+
+                              '<td><span class="legend-swatch blocked-sample-swatch"></span>Blocked</td></tr></table>',
+                        verticalAlign: 'bottom',
+                        floating: true,
+                        x: -50,
+                        y: -25
+                    },
+                    tooltip: {
+                        formatter: this._formatTooltip
+                    },
+                    spacingTop: 0,
+                    title: { text: null },
+                    plotOptions: {
+                        pie: {
+                            shadow: false,
+                            center: ['50%', '50%'],
+                            point: {
+                                events: {
+                                    click: function(event) {
+                                        if (this.ref) {
+                                            Rally.nav.Manager.showDetail(this.ref);
+                                        }
+                                    }
+                                }
+                            },
+                            showInLegend: false
+                        }
+                    }
+                }
+            }, overrides || {});
+        },
+
+        _addPointForTopLevelItem: function(record, relatedCount) {
+            var blocked = false;
+            var pointSize = (record.get('PreliminaryEstimate') && record.get('PreliminaryEstimate').Value) || 1;
+            var color = '#C0C0C0';
+            var colorObject;
+
+            if (record.get('PlannedEndDate')) {
+              colorObject = Rally.util.HealthColorCalculator.calculateHealthColorForPortfolioItemData(record, 'PercentDoneByStoryPlanEstimate');
+              color = colorObject.hex;
+            }
+
+            console.log(record.get('Name'), pointSize, record.get('PreliminaryEstimate') && record.get('PreliminaryEstimate').Value);
+            this._chartData.push({
+                name: record.get('FormattedID'),
+                y: pointSize,
+                color: color,
+                rallyName: record.get('Name'),
+                status: (record.get('State') && record.get('State').Name) || '--No Entry--',
+                blocked: blocked,
+                blockedReason: blocked ? record.get('BlockedReason') : null,
+                hasChildren: relatedCount > 0,
+                relatedCount: relatedCount,
+                ref: record.get('_ref'),
+                parentFormattedID: null
+            });
+        },
+
+        _colorFromStatus: function(state, blocked) { //refactor into css and classes, should get cleaner
+            var progressColors = {
+                'Defined': '#C0C0C0', // light gray
+                'In-Progress': '#00A9E0', // cyan
+                'Completed': '#8DC63F', // lime
+                'Blocked': '#EE1C25' // red
+            };
+            var color =  progressColors[state];
+            if (blocked) {
+                color = progressColors.Blocked;
+            }
+            return color;
+        },
+
+        _addPointForChildItem: function(record, parentFormattedID, pointSize, parentState, isParentBlocked) {
+            var blocked = record.get('Blocked');
+            var state = record.get('ScheduleState');
+            var color = this._colorFromStatus(this._storyStates[parentState || state], blocked || isParentBlocked);
+
+            this._childChartData.push({
+                name: record.get('FormattedID'),
+                y: pointSize,
+                color: color,
+                rallyName: record.get('Name'),
+                status: state,
+                blocked: blocked,
+                blockedReason: blocked ? record.get('BlockedReason') : null,
+                hasChildren: false,
+                relatedCount: 0,
+                ref: record.get('_ref'),
+                parentFormattedID: parentFormattedID
+            });
+        },
+
+        _formatTooltip: function() {
+            var relatedCount = '';
+            var blockedMessage = '';
+            var artifactName = this.point.rallyName ? '<b>' + this.point.name + '</b>: ' + this.point.rallyName + '<br/>' : this.point.name;
+
+            if (this.point.blocked) {
+                blockedMessage = '<b>Blocked</b>';
+                if (this.point.blockedReason) {
+                    blockedMessage += ': ' + this.point.blockedReason;
+                }
+            }
+
+            if (this.point.series && this.point.series.name === 'Parents') {
+                if(!this.point.userStory) {
+                    var numRelated = this.point.relatedCount || 0;
+                    relatedCount = 'Stories: ' + numRelated;
+                }
+                return artifactName + this.point.status + '<br/>' + relatedCount + '<br/>' + blockedMessage;
+            } else {
+                return artifactName + this.point.status + '<br/>' + blockedMessage;
+            }
+        }
+    });
+})();
+
+                (function(){
+    var Ext = window.Ext4 || window.Ext;
+
+    Ext.define("Rally.apps.releasetracking.statsbanner.iterationprogresscharts.MinimalPieChart", {
+        alias: "widget.statsbannerminimalpiechart",
+        extend: "Rally.apps.releasetracking.statsbanner.iterationprogresscharts.PieChart",
+
+        _loadArtifacts: function() {
+            this._chartData = [];
+            this._childChartData = [];
+            this._createDataPointsFromSummary();
+        },
+
+        _createDataPointsFromSummary: function() {
+            _.each(this.store.getRange(), function(record){
+                var summary = record.get('Summary');
+                var totalChildItems = record.get('LeafStoryCount');
+                var planEstimate = (record.get('PreliminaryEstimate') && record.get('PreliminaryEstimate').Value) || 1;
+                var nullPointString = 'No stories.';
+                var keys, state, scheduleState, blocked, count;
+
+                var pointSizeForChildren = (planEstimate / totalChildItems) || 1;
+
+                this._addPointForTopLevelItem(record, totalChildItems);
+
+                if (totalChildItems === 0) {
+                    this._childChartData.push({
+                        name: nullPointString,
+                        y: planEstimate,
+                        color: '#FFF',
+                        rallyName: null,
+                        status: '',
+                        blocked: false,
+                        blockedReason: '',
+                        hasChildren: false,
+                        relatedCount: 0,
+                        ref: null,
+                        parentFormattedID: null
+                    });
+                }
+                if (summary.UserStories && summary.UserStories.Count){
+                    keys = _.keys(summary.UserStories['schedulestate+blocked']);
+                    _.each(keys, function(key) {
+                        state = key.split('+');
+                        scheduleState =  state[0];
+                        blocked = state[1] === 'true';
+                        count = summary.UserStories['schedulestate+blocked'][key];
+                        _.each(_.range(0, count), function(point) {
+                            this._addPointForChildItem(record.get('FormattedID'), pointSizeForChildren, scheduleState, blocked);
+                        }, this);
+                    }, this);
+                }
+            }, this);
+
+            var chart = this._createChartConfig();
+            this.add(chart);
+
+        },
+
+        _onAllDataLoaded: function() {
+            _.each(this.store.getRange(), function(record) {
+                var stories = record.get('UserStories');
+                var relatedCount = record.get('LeafStoryCount');
+                var planEstimate = (record.get('PreliminaryEstimate') && record.get('PreliminaryEstimate')) || 1;
+                var pointSizeForChildren = (planEstimate / relatedCount) || 1;
+                var nullPointString = 'No stories.';
+
+                this._addPointForTopLevelItem(record, relatedCount);
+
+                if (relatedCount === 0) {
+                    this._childChartData.push({
+                        name: nullPointString,
+                        y: planEstimate,
+                        color: '#FFF',
+                        rallyName: null,
+                        status: '',
+                        blocked: false,
+                        blockedReason: '',
+                        hasChildren: false,
+                        relatedCount: 0,
+                        ref: null,
+                        parentFormattedID: null
+                    });
+                } else {
+                    if (stories && stories.Results) {
+                        _.each(stories.Results, function(story) {
+                            this._addPointForChildItem(story, record.get('FormattedID'), pointSizeForChildren);
+                        }, this);
+                    }
+                }
+            }, this);
+
+            var chart = this._createChartConfig();
+            this.add(chart);
+
+            this.recordLoadEnd();
+        },
+
+         _createChartConfig: function(overrides) {
+            var clickChartHandler = _.isFunction(this.clickHandler) ? this.clickHandler : Ext.emptyFn;
+            var height = this.height;
+            return Ext.Object.merge({
+                xtype: 'rallychart',
+                loadMask: false,
+                updateAfterRender: Ext.bind(this._onLoad, this),
+
+                chartData: {
+                    series: [
+                        {
+                            type:'pie',
+                            name: 'Parents',
+                            data: this._chartData,
+                            size: height,
+                            allowPointSelect: false,
+                            dataLabels: {
+                                enabled: false
+                            }
+                        },
+                        {
+                            type:'pie',
+                            name: 'Children',
+                            data: this._childChartData,
+                            size: height,
+                            innerSize: 0.8 * height,
+                            allowPointSelect: false,
+                            dataLabels: { enabled: false }
+                        }
+                    ]
+                },
+
+                chartConfig: {
+                    chart: {
+                        type: 'pie',
+                        height: height,
+                        width: this.width,
+                        spacingTop: 0,
+                        spacingRight: 0,
+                        spacingBottom: 0,
+                        spacingLeft: 0,
+                        events: {
+                            click: clickChartHandler
+                        }
+                    },
+                    tooltip: {
+                        formatter: function() {
+                            return false;
+                        }
+                    },
+                    spacingTop: 0,
+                    title: { text: null },
+                    plotOptions: {
+                        pie: {
+                            shadow: false,
+                            center: ['50%', '50%'],
+                            point: {
+                                events: {
+                                    click: clickChartHandler
+                                }
+                            },
+                            showInLegend: false
+                        }
+                    }
+                }
+            }, overrides || {});
+        },
+
+        _addPointForTopLevelItem: function(record, relatedCount) {
+            var blocked = false;
+            var pointSize = (record.get('PreliminaryEstimate') && record.get('PreliminaryEstimate').Value) || 1;
+            var color = '#C0C0C0';
+            var colorObject;
+
+            if (record.get('PlannedEndDate')) {
+              colorObject = Rally.util.HealthColorCalculator.calculateHealthColorForPortfolioItemData(record, 'PercentDoneByStoryPlanEstimate');
+              color = colorObject.hex;
+            }
+
+            this._chartData.push({
+                name: record.get('FormattedID'),
+                y: pointSize,
+                color: color,
+                rallyName: record.get('Name'),
+                status: record.get('State') && record.get('State').Name,
+                blocked: blocked,
+                blockedReason: blocked ? record.get('BlockedReason') : null,
+                hasChildren: relatedCount > 0,
+                relatedCount: relatedCount,
+                ref: record.get('_ref'),
+                parentFormattedID: null
+            });
+        },
+
+        _addPointForChildItem: function(parentFormattedID, pointSize, state, blocked) {
+            var color = this._colorFromStatus(this._storyStates[state], blocked);
+
+            this._childChartData.push({
+                y: pointSize,
+                color: color,
+                status: state,
+                blocked: blocked,
+                hasChildren: false,
+                relatedCount: 0,
+                parentFormattedID: parentFormattedID
+            });
+        }
+    });
+})();
+
+                (function () {
+    var Ext = window.Ext4 || window.Ext;
+
+    Ext.define('Rally.apps.releasetracking.statsbanner.IterationProgressDialogChartToggle', {
+        requires:['Rally.ui.Button'],
+        extend:'Ext.Container',
+        alias:'widget.iterationprogressdialogcharttoggle',
+        
+        componentCls: 'iteration-progress-toggle-button-group',
+        layout: 'hbox',
+        border: 1,
+        width: 106,
+        activeButtonCls: 'active',
+
+        defaultType: 'rallybutton',
+
+        config: {
+            startingIndex: 0
+        },
+        
+        items: [{
+            cls: 'toggle left pie-chart',
+            iconCls: 'icon-pie',
+            frame: false,
+            toggleGroup: 'iterationprogressviewtoggle',
+            style: {
+                fontSize: '15px'
+            },
+            toolTipConfig: {
+                html: 'Pie',
+                anchor: 'top',
+                hideDelay: 0
+            },
+            userAction:'IterationProgressApp - User clicked pie chart'
+        },
+        {
+            cls: 'toggle center burndown',
+            iconCls: 'icon-bars',
+            frame: false,
+            toggleGroup: 'iterationprogressviewtoggle',
+            toolTipConfig: {
+                html: 'Burndown',
+                anchor: 'top',
+                hideDelay: 0
+            },
+            userAction:'IterationProgressApp - User clicked burndown'
+        },
+        {
+            cls: 'toggle right cumulativeflow',
+            iconCls: 'icon-graph',
+            frame: false,
+            toggleGroup: 'iterationprogressviewtoggle',
+            toolTipConfig: {
+                html: 'Cumulative Flow',
+                anchor: 'top',
+                hideDelay: 0
+            },
+            userAction:'IterationProgressApp - User clicked CFD'
+        }],
+
+        initComponent: function(config) {
+            this.initConfig(config);
+            this.callParent(arguments);
+
+            this.addEvents([
+                /**
+                 * @event toggle
+                 * Fires when the toggle value is changed.
+                 * @param {String} toggleState 'burndown' or 'cumulativeflow' or 'pie'.
+                 */
+                'toggle'
+            ]);
+
+            this.items.each(function(item) {
+                item.on('click', this._onButtonClick, this);
+            }, this);
+
+            this.setCurrentItem(this.startingIndex);
+        },
+
+        _onButtonClick: function(btn) {
+            var btnIndex = this.items.indexOf(btn);
+            if (btnIndex !== this._activeIndex) {
+                this._setActive(btn);
+                this.fireEvent('toggle', this, btnIndex);
+            }
+        },
+
+        _setActive: function(btn) {
+            this.items.each(function(item, btnIndex) {
+                if (item === btn) {
+                    if (!item.hasCls(this.activeButtonCls.split(' ')[0])) {
+                        item.addCls(this.activeButtonCls);
+                        this._activeIndex = btnIndex;
+                    }
+                } else {
+                    item.removeCls(this.activeButtonCls);
+                }
+            }, this);
+        },
+
+        setCurrentItem: function(itemIndex) {
+            this._setActive(this.items.get(itemIndex));
+        }
+    });
+})();
+
+
+                (function(){
+
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+    * shows burndown for timebox
+    */
+    Ext.define('Rally.apps.releasetracking.statsbanner.IterationProgressDialog', {
+        extend: 'Rally.ui.dialog.Dialog',
+        alias:'widget.statsbanneriterationprogressdialog',
+        requires: [
+            'Rally.apps.releasetracking.statsbanner.IterationProgressDialogChartToggle',
+            //'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.BurndownChart',
+            //'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.CumulativeFlowChart',
+            'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.PieChart',
+            'Rally.ui.carousel.Carousel'
+        ],
+        config: {
+            startingIndex: 0,
+            autoShow: true,
+            draggable: true,
+            disableScroll: true,
+            width: 820,
+            height: 650,
+            closable: true,
+            store: null,
+            context: null
+        },
+        layout: {
+            type: 'vbox',
+            align: 'center'
+        },
+        cls: 'iteration-progress-dialog',
+
+        constructor: function (config){
+            this.initConfig(config || {});
+            this.callParent(arguments);
+        },
+
+        initComponent: function(){
+            var chartWidth = 704;
+            var chartHeight = 570;
+
+            this.callParent(arguments);
+            //this.toggle = this.add({
+                //xtype: 'iterationprogressdialogcharttoggle',
+                //startingIndex: this.startingIndex,
+                //listeners: {
+                    //toggle: this._toggleButtonClick,
+                    //scope: this
+                //}
+            //});
+            this.carousel = this.add({
+                xtype: 'rallycarousel',
+                showDots: false,
+                enableAnimations: false,
+                carouselItems: [
+                    {
+                        xtype: 'statsbannerpiechart',
+                        width: chartWidth,
+                        height: chartHeight,
+                        context: this.context
+                    }
+                    //{
+                        //xtype: 'statsbannerburndownchart',
+                        //width: chartWidth,
+                        //height: chartHeight,
+                        //context: this.context,
+                        //store: this.store
+                    //},
+                    //{
+                        //xtype: 'statsbannercumulativeflowchart',
+                        //width: chartWidth,
+                        //height: chartHeight,
+                        //context: this.context,
+                        //store: this.store
+                    //}
+                ],
+                startingIndex: this.startingIndex,
+                listeners: {
+                    carouselmove: {
+                        fn: this._onCarouselMove,
+                        scope: this
+                    },
+                    afterlayout: {
+                        fn: this._afterLayout,
+                        single: true,
+                        scope: this
+                    }
+                }
+            });
+        },
+
+        _toggleButtonClick: function(toggleBtnContainer, buttonIndex){
+            this._setChart(buttonIndex);
+        },
+
+        _afterLayout: function(){
+            Ext.defer(this._setChart, 10, this, [this.startingIndex]);
+        },
+
+        _setChart: function(chartIndex) {
+            this.carousel.setCurrentItem(chartIndex);
+            //this.toggle.setCurrentItem(chartIndex);
+            // need to bypass the setTitle method as it causes a relayout of the page messing up the carousel
+            this.header.titleCmp.textEl.update(this.carousel.getCurrentItem().displayTitle);
+        },
+
+        _onCarouselMove: function(carousel){
+            this._setChart(carousel.getCurrentItemIndex());
+        }
+    });
+})();
+
+                (function() {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * shows burndown for timebox
+     */
+    Ext.define('Rally.apps.releasetracking.statsbanner.IterationProgress', {
+        extend: 'Rally.apps.releasetracking.statsbanner.BannerWidget',
+        alias:'widget.statsbanneriterationprogress',
+        requires: [
+            'Rally.ui.carousel.Carousel',
+            //'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.BurndownChart',
+            //'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.CumulativeFlowChart',
+            'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.MinimalPieChart',
+            'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.PieChart',
+            'Rally.apps.releasetracking.statsbanner.IterationProgressDialog',
+            'Ext.state.Manager'
+        ],
+
+        config: {
+            context: null,
+            store: null
+        },
+
+        currentChartDisplayed: 0,
+
+        stateId: 'stats-banner-iteration-progress',
+        stateful: true,
+
+        clientMetrics: {
+            method: '_onChartClick',
+            description: 'opened IterationProgressDialog'
+        },
+
+        tpl: [
+            '<div class="expanded-widget">',
+            '<div class="stat-title"></div>',
+            '<div class="stat-metric">',
+            '<div class="stat-carousel"></div>',
+            '</div>',
+            '</div>',
+            '<div class="collapsed-widget">',
+            '<span class="metric-icon icon-pie"></span>',
+            '<div class="stat-title"></div>',
+            '</div>'
+        ],
+
+        constructor: function(config) {
+            this.stateId = Rally.environment.getContext().getScopedStateId(this.stateId);
+            this.callParent(arguments);
+        },
+
+        initComponent: function(){
+            this.mon(this.store, 'datachanged', this.onDataChanged, this);
+            this.callParent(arguments);
+            var boundClickHandler = Ext.bind(this._onChartClick, this);
+
+            this.carouselItems = [
+                {
+                    xtype: 'statsbannerminimalpiechart',
+                    width: 150,
+                    height: 60,
+                    minimalMode: true,
+                    clickHandler: boundClickHandler,
+                    context: this.context,
+                    store: this.store
+                }
+                //{
+                    //xtype: 'statsbannerburndownchart',
+                    //width: 150,
+                    //height: 63,
+                    //minimalMode: true,
+                    //clickHandler: boundClickHandler,
+                    //context: this.context,
+                    //store: this.store
+                //},
+                //{
+                    //xtype: 'statsbannercumulativeflowchart',
+                    //width: 150,
+                    //height: 63,
+                    //minimalMode: true,
+                    //clickHandler: boundClickHandler,
+                    //context: this.context,
+                    //store: this.store
+                //}
+            ];
+
+            _.each(this.carouselItems, function(carouselItem) {
+                carouselItem.listeners = {
+                    ready: this._onChartReady,
+                    scope: this
+                };
+            }, this);
+
+            this._pendingChartReadies = this.carouselItems.length;
+        },
+
+        expand: function() {
+            this.callParent();
+            // Carousel was updated while hidden so it needs to die
+            // and we create a new one since it can't lay itself out
+            if (!this.carousel || this.carousel.getWidth() === 0) {
+                this.onDataChanged();
+            }
+        },
+
+        _onChartReady: function() {
+            this._pendingChartReadies -= 1;
+            if (this._pendingChartReadies === 0) {
+                this.fireEvent('ready', this);
+            }
+        },
+
+        _onChartClick: function() {
+            var currentIndex = this.carousel.getCurrentItemIndex();
+            Ext.create('Rally.apps.releasetracking.statsbanner.IterationProgressDialog', {
+                startingIndex: currentIndex,
+                store: this.store,
+                context: this.context
+            });
+        },
+
+        _cleanupCarousel: function () {
+            if (this.carousel) {
+                this.carousel.destroy();
+                delete this.carousel;
+            }
+        },
+
+        onDestroy: function () {
+            this._cleanupCarousel();
+            this.callParent(arguments);
+        },
+
+        onRender: function() {
+            this.callParent(arguments);
+            if (!this.getContext().getTimeboxScope().getRecord()) {
+                this._addPlaceholder();
+            }
+        },
+
+        applyState: function (state) {
+            if (state){
+                if (state.currentChartDisplayed > this.carouselItems.length -1 || state.currentChartDisplayed < 0) {
+                    this.currentChartDisplayed = 0;
+                } else {
+                    this.currentChartDisplayed = state.currentChartDisplayed;
+                }
+            }
+        },
+
+        getState: function(){
+            return {
+                currentChartDisplayed: this.currentChartDisplayed
+            };
+        },
+
+        onDataChanged: function() {
+            this._cleanupCarousel();
+
+            if(this.rendered) {
+                if (this.getContext().getTimeboxScope().getRecord()) {
+                    this.update();
+
+                    this.createCarousel();
+                } else {
+                    this._addPlaceholder();
+                }
+            }
+        },
+
+        createCarousel: function() {
+            this.carousel = Ext.create('Rally.ui.carousel.Carousel', {
+                showHeader: false,
+                showDots: true,
+                smallDots: true,
+                renderTo: this.getEl().down('.stat-carousel'),
+                height: 75,
+                layout: {
+                    type: 'vbox',
+                    align: 'center'
+                },
+                listeners: {
+                    currentitemset: this._updateTitle,
+                    carouselmove: this._updateTitle,
+                    scope: this
+                },
+                carouselItems: this.carouselItems
+            });
+
+            if (!Ext.isIE8m){
+                // if such next line runs IE8 or < goes boom! WOW!
+                this.carousel.setCurrentItem(this.currentChartDisplayed);
+            }
+
+            this.carousel.on('carouselmove', this._chartShownChanged, this);
+        },
+
+        _updateTitle: function(carousel){
+            _.each(this.getEl().query('.stat-title'), function(el){
+                Ext.fly(el).update(carousel.getCurrentItem().displayTitle);
+            }, this);
+        },
+
+        _chartShownChanged: function(){
+            var chartShown = _.findIndex(this.carouselItems, {xtype: this.carousel.getCurrentItem().xtype});
+            this.currentChartDisplayed = chartShown || 0;
+            this.saveState();
+        },
+
+        _addPlaceholder: function() {
+            this.update();
+
+            if (this.expanded) {
+                this.carousel = Ext.create('Ext.Container', {
+                    renderTo: this.getEl().down('.stat-carousel'),
+                    html: 'no iteration data'
+                });
+            }
+        }
+    });
+})();
+
+                (function() {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * shows collapse/expand toggle for stats banner
+     */
+    Ext.define('Rally.apps.releasetracking.statsbanner.CollapseExpand', {
+        extend: 'Rally.apps.releasetracking.statsbanner.BannerWidget',
+        alias:'widget.statsbannercollapseexpand',
+        requires: [],
+
+        tpl: [
+            '<div class="expanded-widget">',
+            '<div class="toggle-icon icon-chevron-up"></div>',
+            '</div>',
+            '<div class="collapsed-widget">',
+            '<div class="toggle-icon icon-chevron-down"></div>',
+            '</div>'
+        ],
+
+        componentCls: 'collapse-expand',
+
+        bubbleEvents: ['collapse', 'expand'],
+
+        afterRender: function() {
+            this.callParent(arguments);
+            this.getEl().on('click', this._onCollapseExpandClick, this);
+            this.fireEvent('ready', this);
+        },
+
+        _onCollapseExpandClick: function() {
+            if (this.expanded) {
+                this.fireEvent('collapse', this);
+            } else {
+                this.fireEvent('expand', this);
+            }
+        },
+
+        expand: function() {
+            this.callParent(arguments);
+            this.doComponentLayout();
+        },
+
+        collapse: function() {
+            this.callParent(arguments);
+            this.doComponentLayout();
+        }
+    });
+})();
+
+                (function() {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * Allows user to see stats for a timebox in a horizontal bar format
+     */
+    Ext.define('Rally.apps.releasetracking.StatsBanner', {
+        extend: 'Ext.Container',
+        alias:'widget.statsbanner',
+        requires: [
+            'Rally.apps.releasetracking.statsbanner.PlannedVelocity',
+            'Rally.apps.releasetracking.statsbanner.TimeboxEnd',
+            'Rally.apps.releasetracking.statsbanner.LateStories',
+            'Rally.apps.releasetracking.statsbanner.Accepted',
+            'Rally.apps.releasetracking.statsbanner.EstimatedStories',
+            'Rally.apps.releasetracking.statsbanner.IterationProgress',
+            'Rally.apps.releasetracking.statsbanner.CollapseExpand'
+        ],
+        mixins: [
+            'Rally.Messageable',
+            'Rally.clientmetrics.ClientMetricsRecordable'
+        ],
+        cls: 'stats-banner',
+        layout: 'hbox',
+        border: 0,
+        width: '100%',
+        stateful: true,
+        stateEvents: ['expand', 'collapse'],
+
+        config: {
+            context: null,
+            expanded: true
+        },
+
+        items: [
+            {xtype: 'statsbannerplannedvelocity'},
+            {xtype: 'statsbannertimeboxend'},
+            {xtype: 'statsbannerestimatedstories'},
+            {xtype: 'statsbanneraccepted'},
+            {xtype: 'statsbannerlatestories'},
+            {xtype: 'statsbanneriterationprogress', flex: 2},
+            {xtype: 'statsbannercollapseexpand', flex: 0}
+        ],
+
+        constructor: function() {
+            this.stateId = Rally.environment.getContext().getScopedStateId('stats-banner');
+            this.callParent(arguments);
+        },
+
+        initComponent: function() {
+            this.addEvents(
+                /**
+                 * @event
+                 * Fires when expand is clicked
+                 */
+                'expand',
+                /**
+                 * @event
+                 * Fires when collapse is clicked
+                 */
+                'collapse'
+            );
+
+            this.subscribe(this, Rally.Message.objectDestroy, this._update, this);
+            this.subscribe(this, Rally.Message.objectCreate, this._update, this);
+            this.subscribe(this, Rally.Message.objectUpdate, this._update, this);
+            this.subscribe(this, Rally.Message.bulkUpdate, this._update, this);
+
+            //var tbs = this.context.getTimeboxScope();
+            this.store = Ext.create('Rally.data.wsapi.artifact.Store', {
+                models: ['PortfolioItem/Feature'],
+                fetch: [
+                  'Release[Name;ReleaseStartDate;ReleaseDate]',
+                  'PreliminaryEstimate[Value]',
+                  'LateChildCount',
+                  'AcceptedLeafStoryPlanEstimateTotal', 'AcceptedLeafStoryCount',
+                  'LeafStoryCount', 'LeafStoryPlanEstimateTotal', 'UnEstimatedLeafStoryCount',
+                  'PlannedStartDate', 'PlannedEndDate', 'ActualStartDate',
+                  'UserStories:summary[ScheduleState;PlanEstimate;ScheduleState+Blocked]'
+                ],
+                useShallowFetch: true,
+                filters: [
+                  this.context.getTimeboxScope().getQueryFilter()
+                ],
+                context: this.context.getDataContext(),
+                limit: Infinity,
+                requester: this
+            });
+
+            //need to configure the items at the instance level, not the class level (i.e. don't use the 'defaults' config)
+            this.items = this._configureItems(this.items);
+
+            this.on('expand', this._onExpand, this);
+            this.on('collapse', this._onCollapse, this);
+            this.callParent(arguments);
+
+            this._update();
+        },
+
+        onRender: function() {
+            if (this.expanded) {
+                this.removeCls('collapsed');
+            } else {
+                this.addCls('collapsed');
+            }
+            this._setExpandedOnChildItems();
+            this.callParent(arguments);
+        },
+
+        applyState: function (state) {
+            if (Ext.isDefined(state.expanded)) {
+                this.setExpanded(state.expanded);
+            }
+            this._setExpandedOnChildItems();
+        },
+
+        getState: function(){
+            return {
+                expanded: this.expanded
+            };
+        },
+
+        _setExpandedOnChildItems: function() {
+            _.each(this.items.getRange(), function(item) {
+                item.setExpanded(this.expanded);
+            }, this);
+        },
+
+        _getItemDefaults: function() {
+            return {
+                flex: 1,
+                context: this.context,
+                store: this.store,
+                listeners: {
+                    ready: this._onReady,
+                    scope: this
+                }
+            };
+        },
+
+        _onReady: function() {
+            this._readyCount = (this._readyCount || 0) + 1;
+            if(this._readyCount === this.items.getCount()) {
+                this.recordComponentReady();
+                delete this._readyCount;
+            }
+        },
+
+        _onCollapse: function() {
+            this.addCls('collapsed');
+            this.setExpanded(false);
+
+            _.invoke(this.items.getRange(), 'collapse');
+        },
+
+        _onExpand: function() {
+            this.removeCls('collapsed');
+            this.setExpanded(true);
+
+            _.invoke(this.items.getRange(), 'expand');
+        },
+
+        _hasTimebox: function() {
+            return !!this.context.getTimeboxScope().getRecord();
+        },
+
+        _configureItems: function(items) {
+            var defaults = this._getItemDefaults();
+
+            return _.map(items, function(item) {
+                return _.defaults(_.cloneDeep(item), defaults);
+            });
+        },
+
+        _update: function () {
+            if(this._hasTimebox()) {
+                this.store.load();
+            }
+        }
+    });
+})();
+
+                (function () {
+  var Ext = window.Ext4 || window.Ext;
+
+  /**
+   * Iteration Tracking Board App
+   * The Iteration Tracking Board can be used to visualize and manage your User Stories and Defects within an Iteration.
+   */
+  Ext.define('Rally.apps.releasetracking.ReleaseTrackingApp', {
+    extend: 'Rally.app.TimeboxScopedApp',
+    requires: [
+      'Rally.data.Ranker',
+      'Rally.ui.gridboard.GridBoard',
+      'Rally.ui.grid.TreeGrid',
+      'Rally.data.wsapi.TreeStoreBuilder',
+      'Rally.ui.cardboard.plugin.FixedHeader',
+      'Rally.ui.cardboard.plugin.Print',
+      'Rally.ui.gridboard.plugin.GridBoardAddNew',
+      'Rally.ui.gridboard.plugin.GridBoardOwnerFilter',
+      'Rally.ui.gridboard.plugin.GridBoardFilterInfo',
+      'Rally.ui.gridboard.plugin.GridBoardArtifactTypeChooser',
+      'Rally.ui.gridboard.plugin.GridBoardFieldPicker',
+      'Rally.ui.cardboard.plugin.ColumnPolicy',
+      'Rally.ui.gridboard.plugin.GridBoardFilterInfo',
+      'Rally.ui.gridboard.plugin.GridBoardFilterControl',
+      'Rally.ui.gridboard.plugin.GridBoardToggleable',
+      'Rally.ui.grid.plugin.TreeGridExpandedRowPersistence',
+      'Rally.ui.gridboard.plugin.GridBoardExpandAll',
+      'Rally.ui.gridboard.plugin.GridBoardCustomView',
+      'Rally.ui.filter.view.ModelFilter',
+      'Rally.ui.filter.view.OwnerFilter',
+      'Rally.ui.filter.view.OwnerPillFilter',
+      'Rally.ui.filter.view.TagPillFilter',
+      'Rally.app.Message',
+      'Rally.clientmetrics.ClientMetricsRecordable',
+      'Rally.apps.releasetracking.StatsBanner'
+    ],
+
+    mixins: [
+      'Rally.app.CardFieldSelectable',
+      'Rally.clientmetrics.ClientMetricsRecordable'
+    ],
+    componentCls: 'iterationtrackingboard',
+    alias: 'widget.rallyreleasetrackingapp',
+
+    settingsScope: 'project',
+    scopeType: 'release',
+    autoScroll: false,
+
+    config: {
+      defaultSettings: {
+        ignoreProjectScoping: true
+      }
+    },
+
+    eModelNames: ['User Story', 'Defect', 'Defect Suite', 'Test Set'],
+    sModelNames: [],
+
+    onScopeChange: function() {
+      if(!this.rendered) {
+        this.on('afterrender', this.onScopeChange, this, {single: true});
+        return;
+      }
+
+      var typeStore = Ext.create('Rally.data.wsapi.Store', {
+        autoLoad: false,
+        model: 'TypeDefinition',
+        sorters: [{
+          property: 'Ordinal',
+          direction: 'ASC'
+        }],
+        filters: [{
+          property: 'Parent.Name',
+          operator: '=',
+          value: 'Portfolio Item'
+        }, {
+          property: 'Creatable',
+          operator: '=',
+          value: true
+        }]
+      });
+
+      typeStore.load({
+        scope: this,
+        callback: function (records) {
+          this.sModelNames = Ext.Array.from(_.first(records).get('TypePath'));
+          this.sModelMap = _.transform(records, function (acc, rec) { acc[rec.get('TypePath')] = rec; }, {});
+
+          this._addStatsBanner();
+          this._getGridStore().then({
+            success: function(gridStore) {
+              var model = gridStore.model;
+              this._addGridBoard(gridStore);
+              gridStore.setParentTypes(this.sModelNames);
+              gridStore.load();
+            },
+            scope: this
+          });
+        }
+      });
+
+    },
+
+    _getModelNames: function () {
+      return _.union(this.sModelNames, this.eModelNames);
+    },
+
+    getSettingsFields: function () {
+      var fields = this.callParent(arguments);
+      fields.push({
+        name: 'ignoreProjectScoping',
+        xtype: 'rallycheckboxfield',
+        label: 'Show Children in any Project'
+      });
+
+      return fields;
+    },
+
+    _getGridStore: function() {
+      var context = this.getContext(),
+      config = {
+        models: this._getModelNames(),
+        autoLoad: false,
+        remoteSort: true,
+        root: {expanded: true},
+        enableHierarchy: true,
+        expandingNodesRespectProjectScoping: !this.getSetting('ignoreProjectScoping')
+      };
+
+      config.filters = [context.getTimeboxScope().getQueryFilter()];
+
+      return Ext.create('Rally.data.wsapi.TreeStoreBuilder').build(config).then({
+        success: function (store) {
+          return store;
+        }
+      });
+    },
+
+    _addStatsBanner: function() {
+      this.remove('statsBanner');
+      this.add({
+        xtype: 'statsbanner',
+        itemId: 'statsBanner',
+        context: this.getContext(),
+        margin: '0 0 5px 0',
+        listeners: {
+          resize: this._resizeGridBoardToFillSpace,
+          scope: this
+        }
+      });
+    },
+
+    _addGridBoard: function (gridStore) {
+      var context = this.getContext();
+
+      this.remove('gridBoard');
+
+      this.gridboard = this.add({
+        itemId: 'gridBoard',
+        xtype: 'rallygridboard',
+        stateId: 'portfoliotracking-gridboard',
+        context: context,
+        plugins: this._getGridBoardPlugins(),
+        modelNames: this._getModelNames(),
+        gridConfig: this._getGridConfig(gridStore),
+        addNewPluginConfig: {
+          style: {
+            'float': 'left',
+            'margin-right': '5px'
+          }
+        },
+        listeners: {
+          load: this._onLoad,
+          toggle: this._onToggle,
+          recordupdate: this._publishContentUpdatedNoDashboardLayout,
+          recordcreate: this._publishContentUpdatedNoDashboardLayout,
+          scope: this
+        },
+        height: Math.max(this.getAvailableGridBoardHeight(), 150)
+      });
+    },
+
+    /**
+     * @private
+     */
+    getAvailableGridBoardHeight: function() {
+      var height = this.getHeight();
+      if(this.down('#statsBanner').rendered) {
+        height -= this.down('#statsBanner').getHeight();
+      }
+      return height;
+    },
+
+    _getGridBoardPlugins: function() {
+      var plugins = ['rallygridboardaddnew'],
+      context = this.getContext();
+
+      if (context.isFeatureEnabled('EXPAND_ALL_TREE_GRID_CHILDREN')) {
+        plugins.push('rallygridboardexpandall');
+      }
+
+      if (context.isFeatureEnabled('BETA_TRACKING_EXPERIENCE')) {
+        var filterControlConfig = {
+          cls: 'small gridboard-filter-control',
+          context: context,
+          margin: '3 10 3 7',
+          stateful: true,
+          stateId: context.getScopedStateId('iteration-tracking-filter-button')
+        };
+
+        if (context.isFeatureEnabled('USE_CUSTOM_FILTER_POPOVER_ON_ITERATION_TRACKING_APP')) {
+          _.merge(filterControlConfig, {
+            customFilterPopoverEnabled: true,
+            modelNames: this.modelNames
+          });
+        } else {
+          _.merge(filterControlConfig, {
+            items: [
+              this._createOwnerFilterItem(context),
+              this._createTagFilterItem(context),
+              this._createModelFilterItem(context)
+            ]
+          });
+        }
+
+        plugins.push({
+          ptype: 'rallygridboardfiltercontrol',
+          filterControlConfig: filterControlConfig
+        });
+      } else {
+        plugins.push('rallygridboardownerfilter');
+      }
+
+      plugins.push('rallygridboardtoggleable');
+      var alwaysSelectedValues = ['FormattedID', 'Name', 'Owner'];
+      if (context.getWorkspace().WorkspaceConfiguration.DragDropRankingEnabled) {
+        alwaysSelectedValues.push('DragAndDropRank');
+      }
+
+      if (!context.isFeatureEnabled('BETA_TRACKING_EXPERIENCE')) {
+        plugins.push({
+          ptype: 'rallygridboardfilterinfo',
+          isGloballyScoped: Ext.isEmpty(this.getSetting('project')),
+          stateId: 'iteration-tracking-owner-filter-' + this.getAppId()
+        });
+      }
+
+      plugins.push({
+        ptype: 'rallygridboardfieldpicker',
+        headerPosition: 'left',
+        gridFieldBlackList: [
+          'ObjectID',
+          'Description',
+          'DisplayColor',
+          'Notes',
+          'Subscription',
+          'Workspace',
+          'Changesets',
+          'RevisionHistory',
+          'Children'
+        ],
+        boardFieldBlackList: [
+          'ObjectID',
+          'Description',
+          'DisplayColor',
+          'Notes',
+          'Rank',
+          'DragAndDropRank',
+          'Subscription',
+          'Workspace',
+          'Changesets',
+          'RevisionHistory',
+          'PortfolioItemType',
+          'StateChangedDate',
+          'Children'
+        ],
+        alwaysSelectedValues: alwaysSelectedValues,
+        modelNames: this.modelNames,
+        boardFieldDefaults: (this.getSetting('cardFields') && this.getSetting('cardFields').split(',')) ||
+          ['Parent', 'Tasks', 'Defects', 'Discussion', 'PlanEstimate', 'Iteration']
+      });
+
+      if (context.isFeatureEnabled('ITERATION_TRACKING_CUSTOM_VIEWS')) {
+        plugins.push(this._getCustomViewConfig());
+      }
+
+      return plugins;
+    },
+
+    setHeight: Ext.Function.createBuffered(function() {
+      this.superclass.setHeight.apply(this, arguments);
+      this._resizeGridBoardToFillSpace();
+    }, 100),
+
+    _resizeGridBoardToFillSpace: function() {
+      if(this.gridboard) {
+        this.gridboard.setHeight(this.getAvailableGridBoardHeight());
+      }
+    },
+
+    _getCustomViewConfig: function() {
+      var customViewConfig = {
+        ptype: 'rallygridboardcustomview',
+        stateId: 'iteration-tracking-board-app',
+
+        defaultGridViews: [{
+          model: ['UserStory', 'Defect', 'DefectSuite'],
+          name: 'Defect Status',
+          state: {
+            cmpState: {
+              expandAfterApply: true,
+              columns: [
+                'Name',
+                'State',
+                'Discussion',
+                'Priority',
+                'Severity',
+                'FoundIn',
+                'FixedIn',
+                'Owner'
+              ]
+            },
+            filterState: {
+              filter: {
+                defectstatusview: {
+                  isActiveFilter: false,
+                  itemId: 'defectstatusview',
+                  queryString: '((Defects.ObjectID != null) OR (Priority != null))'
+                }
+              }
+            }
+          }
+        }, {
+          model: ['UserStory', 'Defect', 'TestSet', 'DefectSuite'],
+          name: 'Task Status',
+          state: {
+            cmpState: {
+              expandAfterApply: true,
+              columns: [
+                'Name',
+                'State',
+                'PlanEstimate',
+                'TaskEstimate',
+                'ToDo',
+                'Discussions',
+                'Owner'
+              ]
+            },
+            filterState: {
+              filter: {
+                taskstatusview: {
+                  isActiveFilter: false,
+                  itemId: 'taskstatusview',
+                  queryString: '(Tasks.ObjectID != null)'
+                }
+              }
+            }
+          }
+        }, {
+          model: ['UserStory', 'Defect', 'TestSet'],
+          name: 'Test Status',
+          state: {
+            cmpState: {
+              expandAfterApply: true,
+              columns: [
+                'Name',
+                'State',
+                'Discussions',
+                'LastVerdict',
+                'LastBuild',
+                'LastRun',
+                'ActiveDefects',
+                'Priority',
+                'Owner'
+              ]
+            },
+            filterState: {
+              filter: {
+                teststatusview: {
+                  isActiveFilter: false,
+                  itemId: 'teststatusview',
+                  queryString: '(TestCases.ObjectID != null)'
+                }
+              }
+            }
+          }
+        }]
+      };
+
+      customViewConfig.defaultBoardViews = _.cloneDeep(customViewConfig.defaultGridViews);
+      _.each(customViewConfig.defaultBoardViews, function(view) {
+        delete view.state.cmpState;
+      });
+
+      return customViewConfig;
+    },
+
+    _createOwnerFilterItem: function (context) {
+      var isPillPickerEnabled = context.isFeatureEnabled('BETA_TRACKING_EXPERIENCE'),
+      projectRef = context.getProjectRef();
+
+      if (isPillPickerEnabled) {
+        return {
+          xtype: 'rallyownerpillfilter',
+          margin: '-15 0 5 0',
+          filterChildren: this.getContext().isFeatureEnabled('S58650_ALLOW_WSAPI_TRAVERSAL_FILTER_FOR_MULTIPLE_TYPES'),
+          project: projectRef,
+          showPills: false,
+          showClear: true
+        };
+      } else {
+        return {
+          xtype: 'rallyownerfilter',
+          margin: '5 0 5 0',
+          filterChildren: this.getContext().isFeatureEnabled('S58650_ALLOW_WSAPI_TRAVERSAL_FILTER_FOR_MULTIPLE_TYPES'),
+          project: projectRef
+        };
+      }
+
+    },
+
+    _createTagFilterItem: function (context) {
+      var filterUiImprovementsToggleEnabled = context.isFeatureEnabled('BETA_TRACKING_EXPERIENCE');
+      return {
+        xtype: 'rallytagpillfilter',
+        margin: filterUiImprovementsToggleEnabled ? '-15 0 5 0' : '5 0 5 0',
+        showPills: filterUiImprovementsToggleEnabled,
+        showClear: filterUiImprovementsToggleEnabled,
+        remoteFilter: filterUiImprovementsToggleEnabled
+      };
+    },
+
+    _createModelFilterItem: function (context) {
+      return {
+        xtype: 'rallymodelfilter',
+        models: this.modelNames,
+        context: context
+      };
+    },
+
+    _getGridConfig: function (gridStore) {
+      var context = this.getContext(),
+      stateString = 'release-tracking',
+      stateId = context.getScopedStateId(stateString);
+
+      var gridConfig = {
+        xtype: 'rallytreegrid',
+        store: gridStore,
+        //enableRanking: this.getContext().getWorkspace().WorkspaceConfiguration.DragDropRankingEnabled,
+        //enableRanking: false,
+        //enableBulkEdit: false,
+        //enableEditing: false,
+        columnCfgs: null, //must set this to null to offset default behaviors in the gridboard
+        defaultColumnCfgs: this._getGridColumns(),
+        model: 'UserStory',
+        showSummary: true,
+        summaryColumns: this._getSummaryColumnConfig(),
+        plugins: [],
+        stateId: stateId,
+        stateful: true
+      };
+
+      return gridConfig;
+    },
+
+    _getSummaryColumnConfig: function () {
+      var taskUnitName = this.getContext().getWorkspace().WorkspaceConfiguration.TaskUnitName,
+      planEstimateUnitName = this.getContext().getWorkspace().WorkspaceConfiguration.IterationEstimateUnitName;
+
+      return [
+        {
+          field: 'AcceptedLeafStoryCount',
+          type: 'sum',
+          units: 'Total'
+        },
+        {
+          field: 'AcceptedLeafStoryPlanEstimateTotal',
+          type: 'sum',
+          units: planEstimateUnitName
+        },
+        {
+          field: 'LeafStoryCount',
+          type: 'sum',
+          units: 'Total'
+        },
+        {
+          field: 'LeafStoryPlanEstimateTotal',
+          type: 'sum',
+          units: planEstimateUnitName
+        },
+        {
+          field: 'UnEstimatedLeafStoryCount',
+          type: 'sum',
+          units: 'Total'
+        }
+      ];
+    },
+
+    _getGridColumns: function (columns) {
+      var result = ['FormattedID', 'Name', 'PercentDoneByStoryPlanEstimate', 'PreliminaryEstimate', 'ScheduleState', 'PlanEstimate', 'Blocked', 'Iteration', 'Owner', 'Discussion'];
+
+      if (columns) {
+        result = columns;
+      }
+      _.pull(result, 'FormattedID');
+
+      return result;
+    },
+
+    _onLoad: function () {
+      this._publishContentUpdated();
+      this.recordComponentReady();
+    },
+
+    _onBoardFilter: function () {
+      this.setLoading(true);
+    },
+
+    _onBoardFilterComplete: function () {
+      this.setLoading(false);
+    },
+
+    _onToggle: function (toggleState) {
+      var appEl = this.getEl();
+
+      if (toggleState === 'board') {
+        appEl.replaceCls('grid-toggled', 'board-toggled');
+      } else {
+        appEl.replaceCls('board-toggled', 'grid-toggled');
+      }
+      this._publishContentUpdated();
+    },
+
+    _publishContentUpdated: function () {
+      this.fireEvent('contentupdated');
+    },
+
+    _publishContentUpdatedNoDashboardLayout: function () {
+      this.fireEvent('contentupdated', {dashboardLayout: false});
+    }
+  });
+})();
+
+
+            Rally.launchApp('Rally.apps.releasetracking.ReleaseTrackingApp', {
+                name:"Release Tracking Board",
+	            parentRepos:""
+            });
+
+        });
+    </script>
+
+
+    <style type="text/css">
+        .stat-panel .collapsed-widget,
+.stat-panel .collapsed-widget > div {
+  display: none;
+}
+.stat-panel .expanded-widget,
+.stat-panel .expanded-widget > div {
+  display: block;
+}
+.stat-panel.collapsed .collapsed-widget,
+.stat-panel.collapsed .collapsed-widget > div {
+  display: inline-block;
+}
+.stat-panel.collapsed .expanded-widget,
+.stat-panel.collapsed .expanded-widget > div {
+  display: none;
+}
+.stats-banner .stat-panel {
+  border-top: 1px solid #d6d6d6;
+  border-left: 1px solid #d6d6d6;
+  border-bottom: 1px solid #d6d6d6;
+  height: 110px;
+  text-align: center;
+}
+.stats-banner .stat-panel:first-child {
+  border-left: 0;
+}
+.stats-banner .stat-panel:last-child {
+  border-left-width: 2px;
+}
+.stats-banner .stat-panel .stat-title {
+  color: #222222;
+  font-family: ProximaNovaSemiBold, Helvetica, Arial;
+  font-size: 14px;
+  padding-top: 5px;
+}
+.stats-banner .stat-panel .stat-metric {
+  color: #666666;
+  font-family: ProximaNovaLight, Helvetica, Arial;
+  font-size: 18px;
+  height: 85px;
+  padding-top: 20px;
+}
+.stats-banner .stat-panel .stat-metric .metric-percent {
+  display: inline;
+  font-size: 12px;
+  vertical-align: super;
+}
+.stats-banner .stat-panel .stat-metric .metric-icon {
+  color: #888888;
+  font-size: 18px;
+  padding-right: 5px;
+}
+.stats-banner .stat-panel .stat-metric .metric-chart {
+  position: absolute;
+  top: 22px;
+  width: 100%;
+}
+.stats-banner .stat-panel .stat-metric .metric-subtext {
+  bottom: 7px;
+  color: #888888;
+  font-family: ProximaNova, Helvetica, Arial;
+  font-size: 11px;
+  position: absolute;
+  text-transform: lowercase;
+  width: 100%;
+}
+.stats-banner .stat-panel .stat-metric .metric-chart-text {
+  position: absolute;
+  top: 43px;
+  width: 100%;
+}
+.stats-banner .stat-panel .stat-metric .metric-chart-text.percent-offset {
+  left: 3px;
+  top: 41px;
+}
+.stats-banner .stat-panel .stat-metric .stat-secondary {
+  color: #888888;
+  font-family: ProximaNova, Helvetica, Arial;
+  font-size: 11px;
+  text-transform: lowercase;
+}
+.stats-banner .stat-panel .stat-metric .stat-carousel {
+  display: inline-block;
+  font-family: ProximaNova, Helvetica, Arial;
+  font-size: 12px;
+  margin-top: -20px;
+}
+.stats-banner .stat-panel .stat-metric .stat-carousel .rally-carousel-pane .x-box-inner {
+  top: 0px !important;
+}
+.stats-banner .stat-panel .stat-metric .stat-carousel .carousel > span {
+  display: inline !important;
+  width: auto !important;
+}
+.stats-banner .stat-panel .stat-metric .stat-carousel .carousel > span > div {
+  display: block !important;
+}
+.stats-banner .stat-panel .stat-metric .stat-carousel .carousel .carousel-panel > span {
+  display: inline !important;
+  width: auto !important;
+}
+.stats-banner .stat-panel .stat-metric .stat-carousel .carousel .carousel-panel > span > div {
+  display: block !important;
+}
+.stats-banner .stat-panel .chart .highcharts-container {
+  cursor: pointer;
+}
+.stats-banner .stat-panel .gauge .chart .highcharts-container {
+  cursor: default;
+}
+.stats-banner .stat-panel .header {
+  display: none;
+}
+.stats-banner .stat-panel.collapse-expand {
+  background-color: #f6f6f6;
+  width: 23px;
+}
+.stats-banner .stat-panel.collapse-expand .toggle-icon {
+  color: #c0c0c0;
+  font-size: 18px;
+  position: relative;
+  right: 1px;
+}
+.stats-banner .stat-panel.collapse-expand:hover {
+  cursor: pointer;
+}
+.stats-banner .stat-panel.collapse-expand:hover .toggle-icon {
+  color: #888888;
+}
+.stats-banner.collapsed .stat-panel {
+  height: 25px;
+  padding-top: 2px;
+}
+.stats-banner.collapsed .stat-panel .metric-icon {
+  color: #888888;
+  font-size: 14px;
+  padding-right: 5px;
+  vertical-align: middle;
+}
+.stats-banner.collapsed .stat-panel .stat-title {
+  color: #222222;
+  display: inline;
+  font-family: ProximaNovaSemiBold, Helvetica, Arial;
+  font-size: 12px;
+  vertical-align: middle;
+}
+.stats-banner.collapsed .stat-panel .stat-metric {
+  color: #888888;
+  display: inline;
+  font-family: ProximaNova, Helvetica, Arial;
+  font-size: 14px;
+  height: auto;
+  padding-top: auto;
+  padding-left: 10px;
+  vertical-align: middle;
+}
+.stats-banner.collapsed .stat-panel .stat-metric .stat-metric-secondary {
+  font-size: 11px;
+}
+.stats-banner.collapsed .stat-panel .stat-metric .metric-percent {
+  font-size: 10px;
+  vertical-align: super;
+}
+.pie-chart-legend {
+  color: #3E576F;
+  font-size: 12px;
+  padding: 5px;
+  border: 1px solid #909090;
+  -webkit-border-radius: 5px;
+  -moz-border-radius: 5px;
+  border-radius: 5px;
+}
+.pie-chart-legend .legend-swatch {
+  width: 17px;
+  height: 12px;
+  border: 1px solid #EEE;
+  -webkit-border-radius: 5px;
+  -moz-border-radius: 5px;
+  border-radius: 5px;
+  float: left;
+  margin: 0 3px 0 6px;
+}
+.pie-chart-legend .legend-swatch.defined-sample-swatch {
+  background: #E0E0E0;
+  /* light-gray */
+}
+.pie-chart-legend .legend-swatch.in-progress-sample-swatch {
+  background: #00a9e0;
+}
+.pie-chart-legend .legend-swatch.completed-sample-swatch {
+  background: #8dc63f;
+}
+.pie-chart-legend .legend-swatch.blocked-sample-swatch {
+  background: #EF3F35;
+  /* rally red */
+}
+.iteration-progress-dialog .carousel .carousel-panel .scroll-button span {
+  width: 45px;
+  height: 50px;
+  line-height: 46px;
+}
+.iteration-progress-dialog .carousel .carousel-panel .scroll-button span:hover {
+  background-color: #e6e6e6;
+  color: #666666;
+}
+.iteration-progress-toggle-button-group {
+  margin-bottom: 5px;
+}
+.x-gecko .stats-banner.collapsed .stat-panel .stat-metric {
+  line-height: 20px;
+  vertical-align: top;
+}
+.x-gecko .stats-banner.collapsed .stat-panel .stat-metric .metric-percent {
+  line-height: 10px;
+}
+.x-gecko.x-mac .stats-banner.collapsed .stat-panel .stat-metric {
+  line-height: 22px;
+}
+
+    </style>
+    <style type="text/css">
+        .iterationtrackingboard {
+  overflow-y: hidden;
+}
+.iterationtrackingboard .header {
+  line-height: normal;
+  padding: 5px 5px 2px 5px;
+}
+.iterationtrackingboard .header .add-new {
+  float: left;
+}
+.iterationtrackingboard .header .add-new .new {
+  margin-left: 0;
+}
+.iterationtrackingboard .header .rui-triggerfield {
+  margin-bottom: 5px;
+}
+.iterationtrackingboard .blank-slate-msg .x-panel-body {
+  clear: both;
+  padding-top: 20px;
+  text-align: center;
+}
+.iterationtrackingboard .gridboard-filter-control {
+  height: 22px;
+  margin: 3px 0px 0px 5px;
+}
+.iterationtrackingboard .rui-leftright {
+  margin-bottom: 10px;
+}
+.settings-no-grid {
+  padding: 10px;
+}
+
+    </style>
+</head>
+<body>
+</body>
+</html>

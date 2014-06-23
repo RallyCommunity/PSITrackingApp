@@ -1,0 +1,31 @@
+.iterationtrackingboard {
+  overflow-y: hidden;
+}
+.iterationtrackingboard .header {
+  line-height: normal;
+  padding: 5px 5px 2px 5px;
+}
+.iterationtrackingboard .header .add-new {
+  float: left;
+}
+.iterationtrackingboard .header .add-new .new {
+  margin-left: 0;
+}
+.iterationtrackingboard .header .rui-triggerfield {
+  margin-bottom: 5px;
+}
+.iterationtrackingboard .blank-slate-msg .x-panel-body {
+  clear: both;
+  padding-top: 20px;
+  text-align: center;
+}
+.iterationtrackingboard .gridboard-filter-control {
+  height: 22px;
+  margin: 3px 0px 0px 5px;
+}
+.iterationtrackingboard .rui-leftright {
+  margin-bottom: 10px;
+}
+.settings-no-grid {
+  padding: 10px;
+}
