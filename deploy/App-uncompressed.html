@@ -1489,26 +1489,15 @@
           {
             xtype: 'rallygrid',
             model: 'User Story',
-            //title: config.headerTitle,
             headerCls: 'leftright-header-text',
-            columnCfgs: ['FormattedID', 'Name', 'Feature', 'Plan Estimate', 'Iteration', 'Release', 'Project'],
+            columnCfgs: ['FormattedID', 'Name', 'Feature', 'Plan Estimate', 'Iteration', 'Release', 'Project', 'Owner'],
             pagingToolbarCfg: {
               pageSizes: [5, 10, 15]
             },
-            storeConfig: {
-              pageSize: 5,
-              filters: config.filters
-            },
-            listeners: {
-              show: function (grid) {
-                //this.header.addClass(this.headerCls);
-              },
-              scope: this
-            }
+            store: config.store
           }
         ];
 
-        config.showTitleInHeader = true;
         this.callParent(arguments);
       }
     });
@@ -1581,13 +1570,22 @@
             filters = this._filterPopover(record.data),
             target = this.getEl();
             //targetSelector = this.targetSelector;
+            //
+          var store = Ext.create('Rally.data.wsapi.Store', {
+            model: 'UserStory',
+            fetch: ['FormattedID', 'Name', 'Feature', 'Release', 'Iteration', 'Project', 'Owner'],
+            filters: filters,
+            autoLoad: true,
+            pageSize: 5
+          });
 
           var reloadStoreCallback;
           Ext.create('Rally.apps.releasetracking.statsbanner.popover.LateStories', {
             target: target,
             autoShow: false,
             record: record,
-            filters: filters,
+            //filters: filters,
+            store: store,
             headerTitle: 'User Stories Assigned to Later Releases or Iteration',
             width: 800
           }).show();
