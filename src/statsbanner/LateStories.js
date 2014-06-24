@@ -109,7 +109,8 @@
             autoShow: false,
             record: record,
             filters: filters,
-            headerTitle: 'User Stories Assigned to Later Releases or Iteration'
+            headerTitle: 'User Stories Assigned to Later Releases or Iteration',
+            width: 800
           }).show();
         },
 

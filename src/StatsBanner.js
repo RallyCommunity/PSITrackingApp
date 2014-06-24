@@ -33,7 +33,7 @@
         },
 
         items: [
-            {xtype: 'statsbannerplannedvelocity'},
+            {xtype: 'statsbannerplannedvelocity', unitLabel: 'feature points'},
             {xtype: 'statsbannertimeboxend'},
             {xtype: 'statsbannerestimatedstories'},
             {xtype: 'statsbanneraccepted', byCount: false},

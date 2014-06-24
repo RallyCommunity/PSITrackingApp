@@ -1326,7 +1326,7 @@
                 estimate: estimate,
                 percentage: percentage,
                 plannedVelocity: plannedVelocity,
-                unit: this._getTimeboxUnits()
+                unit: this.unitLabel ? this.unitLabel : this._getTimeboxUnits()
             };
 
             return data;
@@ -1588,7 +1588,8 @@
             autoShow: false,
             record: record,
             filters: filters,
-            headerTitle: 'User Stories Assigned to Later Releases or Iteration'
+            headerTitle: 'User Stories Assigned to Later Releases or Iteration',
+            width: 800
           }).show();
         },
 
@@ -3044,7 +3045,7 @@
         },
 
         items: [
-            {xtype: 'statsbannerplannedvelocity'},
+            {xtype: 'statsbannerplannedvelocity', unitLabel: 'feature points'},
             {xtype: 'statsbannertimeboxend'},
             {xtype: 'statsbannerestimatedstories'},
             {xtype: 'statsbanneraccepted', byCount: false},

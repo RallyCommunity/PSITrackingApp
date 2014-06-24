@@ -69,7 +69,7 @@
                 estimate: estimate,
                 percentage: percentage,
                 plannedVelocity: plannedVelocity,
-                unit: this._getTimeboxUnits()
+                unit: this.unitLabel ? this.unitLabel : this._getTimeboxUnits()
             };
 
             return data;
