@@ -176,12 +176,16 @@
         getAcceptanceData: function () {
             var acceptanceData = {
                 accepted: 0,
-                total: 0
+                total: 0,
+                acceptedCount: 0,
+                count: 0
             };
 
             _.each(this.store.getRange(), function (rec) {
               acceptanceData.accepted += rec.get('AcceptedLeafStoryPlanEstimateTotal');
               acceptanceData.total += rec.get('LeafStoryPlanEstimateTotal');
+              acceptanceData.acceptedCount += rec.get('AcceptedLeafStoryCount');
+              acceptanceData.count += rec.get('LeafStoryCount');
             });
 
             return Deft.Promise.when(acceptanceData);

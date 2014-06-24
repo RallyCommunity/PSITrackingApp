@@ -36,7 +36,8 @@
             {xtype: 'statsbannerplannedvelocity'},
             {xtype: 'statsbannertimeboxend'},
             {xtype: 'statsbannerestimatedstories'},
-            {xtype: 'statsbanneraccepted'},
+            {xtype: 'statsbanneraccepted', byCount: false},
+            {xtype: 'statsbanneraccepted', byCount: true},
             {xtype: 'statsbannerlatestories'},
             {xtype: 'statsbanneriterationprogress', flex: 2},
             {xtype: 'statsbannercollapseexpand', flex: 0}

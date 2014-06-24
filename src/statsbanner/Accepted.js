@@ -35,6 +35,10 @@
             }
         },
 
+        //constructor: function (config) {
+          //this.callParent(arguments);
+        //},
+
         onDataChanged: function () {
             Deft.Promise.all([
                     this.getAcceptanceData(),
@@ -62,8 +66,15 @@
                 this.timeboxData
             );
 
-            data.accepted = Ext.util.Format.round(data.accepted, 2);
-            data.total = Ext.util.Format.round(data.total, 2);
+            if (this.byCount) {
+              data.accepted = Ext.util.Format.round(data.acceptedCount, 2);
+              data.total = Ext.util.Format.round(data.count, 2);
+              data.unit = '';
+            } else {
+              data.accepted = Ext.util.Format.round(data.accepted, 2);
+              data.total = Ext.util.Format.round(data.total, 2);
+            }
+
             data.percentage = Math.round((data.accepted / data.total) * 100) || 0;
 
             return data;

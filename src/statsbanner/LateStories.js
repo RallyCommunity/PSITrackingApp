@@ -10,6 +10,8 @@
           {
             xtype: 'rallygrid',
             model: 'User Story',
+            //title: config.headerTitle,
+            headerCls: 'leftright-header-text',
             columnCfgs: ['FormattedID', 'Name', 'Feature', 'Plan Estimate', 'Iteration', 'Release', 'Project'],
             pagingToolbarCfg: {
               pageSizes: [5, 10, 15]
@@ -18,11 +20,16 @@
               pageSize: 5,
               filters: config.filters
             },
-            width: 600
-            //height: ''
+            listeners: {
+              show: function (grid) {
+                //this.header.addClass(this.headerCls);
+              },
+              scope: this
+            }
           }
         ];
 
+        config.showTitleInHeader = true;
         this.callParent(arguments);
       }
     });
@@ -101,8 +108,8 @@
             target: target,
             autoShow: false,
             record: record,
-            filters: filters
-            //headerTitle: 'User Stories Assigned to Later Releases or Iteration',
+            filters: filters,
+            headerTitle: 'User Stories Assigned to Later Releases or Iteration'
           }).show();
         },
 
