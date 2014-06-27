@@ -170,10 +170,12 @@
             var color = '#C0C0C0';
             var colorObject;
 
-            if (record.get('PlannedEndDate')) {
-              colorObject = Rally.util.HealthColorCalculator.calculateHealthColorForPortfolioItemData(record, 'PercentDoneByStoryPlanEstimate');
+            //if (record.get('PlannedEndDate')) {
+              colorObject = Rally.util.HealthColorCalculator.calculateHealthColorForPortfolioItemData(record.data, 'PercentDoneByStoryCount');
               color = colorObject.hex;
-            }
+            //}
+            console.log('colorObject', record.get('Name'), record.get('PercentDoneByStoryCount'), colorObject);
+            console.dir(record);
 
             this._chartData.push({
                 name: record.get('FormattedID'),

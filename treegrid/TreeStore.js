@@ -416,8 +416,12 @@
         this._configureChildLoad(options);
       }
 
-      options.useShallowFetch = true;
+      options.useShallowFetch = true; //true;
       options.fetch = options.fetch || this._buildFetch(this.fetch, this.model);
+
+      // HACK: The list of fields can become too long and cause a 413 error. This fixes the error at the cost of a fetch=true
+      options.fetch = true;
+
       //console.log('options', options);
       //console.log('gENTY', this.getExpandingNodeTypePath());
       //console.log('pT', this.parentTypes);

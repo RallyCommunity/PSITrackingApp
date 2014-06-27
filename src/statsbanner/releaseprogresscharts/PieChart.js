@@ -67,7 +67,7 @@
             this.store = Ext.create('Rally.data.wsapi.artifact.Store', {
                 models: ['PortfolioItem/Feature'],
                 fetch: ['UserStories', 'PreliminaryEstimate', 'Value', 'FormattedID', 'State[Ordinal;Name]', 'LeafStoryCount', 'Name',
-                        'PlannedEndDate', 'PlannedStartDate', 'ActualStartDate', 'ActualEndDate', 'PercentDoneByStoryPlanEstimate'],
+                        'PlannedEndDate', 'PlannedStartDate', 'ActualStartDate', 'ActualEndDate', 'PercentDoneByStoryPlanEstimate', 'PercentDoneByStoryCount'],
                 filters: [this.context.getTimeboxScope().getQueryFilter()],
                 context: this.context.getDataContext(),
                 limit: Infinity,
@@ -251,12 +251,10 @@
             var color = '#C0C0C0';
             var colorObject;
 
-            if (record.get('PlannedEndDate')) {
-              colorObject = Rally.util.HealthColorCalculator.calculateHealthColorForPortfolioItemData(record, 'PercentDoneByStoryPlanEstimate');
-              color = colorObject.hex;
-            }
+            colorObject = Rally.util.HealthColorCalculator.calculateHealthColorForPortfolioItemData(record.data, 'PercentDoneByStoryCount');
+            color = colorObject.hex;
 
-            console.log(record.get('Name'), pointSize, record.get('PreliminaryEstimate') && record.get('PreliminaryEstimate').Value);
+            //console.log(record.get('Name'), pointSize, record.get('PreliminaryEstimate') && record.get('PreliminaryEstimate').Value);
             this._chartData.push({
                 name: record.get('FormattedID'),
                 y: pointSize,
@@ -264,7 +262,7 @@
                 rallyName: record.get('Name'),
                 status: (record.get('State') && record.get('State').Name) || '--No Entry--',
                 blocked: blocked,
-                blockedReason: blocked ? record.get('BlockedReason') : null,
+                schedule: colorObject.label,
                 hasChildren: relatedCount > 0,
                 relatedCount: relatedCount,
                 ref: record.get('_ref'),
@@ -316,6 +314,10 @@
                 if (this.point.blockedReason) {
                     blockedMessage += ': ' + this.point.blockedReason;
                 }
+            }
+
+            if (this.point.schedule) {
+              blockedMessage = '<b>Schedule</b>: ' + this.point.schedule;
             }
 
             if (this.point.series && this.point.series.name === 'Parents') {

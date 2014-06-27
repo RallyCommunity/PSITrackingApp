@@ -71,12 +71,14 @@
             this.store = Ext.create('Rally.data.wsapi.artifact.Store', {
                 models: ['PortfolioItem/Feature'],
                 fetch: [
+                  'Name',
+                  'PercentDoneByStoryCount', 'PercentDoneByStoryPlanEstimate',
                   'Release[Name;ReleaseStartDate;ReleaseDate]',
                   'PreliminaryEstimate[Value]',
                   'LateChildCount',
                   'AcceptedLeafStoryPlanEstimateTotal', 'AcceptedLeafStoryCount',
                   'LeafStoryCount', 'LeafStoryPlanEstimateTotal', 'UnEstimatedLeafStoryCount',
-                  'PlannedStartDate', 'PlannedEndDate', 'ActualStartDate',
+                  'PlannedStartDate', 'PlannedEndDate', 'ActualStartDate', 'ActualEndDate',
                   'UserStories:summary[ScheduleState;PlanEstimate;ScheduleState+Blocked]'
                 ],
                 useShallowFetch: true,

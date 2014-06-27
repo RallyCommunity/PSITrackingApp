@@ -467,8 +467,12 @@
         this._configureChildLoad(options);
       }
 
-      options.useShallowFetch = true;
+      options.useShallowFetch = true; //true;
       options.fetch = options.fetch || this._buildFetch(this.fetch, this.model);
+
+      // HACK: The list of fields can become too long and cause a 413 error. This fixes the error at the cost of a fetch=true
+      options.fetch = true;
+
       //console.log('options', options);
       //console.log('gENTY', this.getExpandingNodeTypePath());
       //console.log('pT', this.parentTypes);
@@ -2041,7 +2045,7 @@
             this.store = Ext.create('Rally.data.wsapi.artifact.Store', {
                 models: ['PortfolioItem/Feature'],
                 fetch: ['UserStories', 'PreliminaryEstimate', 'Value', 'FormattedID', 'State[Ordinal;Name]', 'LeafStoryCount', 'Name',
-                        'PlannedEndDate', 'PlannedStartDate', 'ActualStartDate', 'ActualEndDate', 'PercentDoneByStoryPlanEstimate'],
+                        'PlannedEndDate', 'PlannedStartDate', 'ActualStartDate', 'ActualEndDate', 'PercentDoneByStoryPlanEstimate', 'PercentDoneByStoryCount'],
                 filters: [this.context.getTimeboxScope().getQueryFilter()],
                 context: this.context.getDataContext(),
                 limit: Infinity,
@@ -2225,12 +2229,10 @@
             var color = '#C0C0C0';
             var colorObject;
 
-            if (record.get('PlannedEndDate')) {
-              colorObject = Rally.util.HealthColorCalculator.calculateHealthColorForPortfolioItemData(record, 'PercentDoneByStoryPlanEstimate');
-              color = colorObject.hex;
-            }
+            colorObject = Rally.util.HealthColorCalculator.calculateHealthColorForPortfolioItemData(record.data, 'PercentDoneByStoryCount');
+            color = colorObject.hex;
 
-            console.log(record.get('Name'), pointSize, record.get('PreliminaryEstimate') && record.get('PreliminaryEstimate').Value);
+            //console.log(record.get('Name'), pointSize, record.get('PreliminaryEstimate') && record.get('PreliminaryEstimate').Value);
             this._chartData.push({
                 name: record.get('FormattedID'),
                 y: pointSize,
@@ -2238,7 +2240,7 @@
                 rallyName: record.get('Name'),
                 status: (record.get('State') && record.get('State').Name) || '--No Entry--',
                 blocked: blocked,
-                blockedReason: blocked ? record.get('BlockedReason') : null,
+                schedule: colorObject.label,
                 hasChildren: relatedCount > 0,
                 relatedCount: relatedCount,
                 ref: record.get('_ref'),
@@ -2290,6 +2292,10 @@
                 if (this.point.blockedReason) {
                     blockedMessage += ': ' + this.point.blockedReason;
                 }
+            }
+
+            if (this.point.schedule) {
+              blockedMessage = '<b>Schedule</b>: ' + this.point.schedule;
             }
 
             if (this.point.series && this.point.series.name === 'Parents') {
@@ -2477,10 +2483,12 @@
             var color = '#C0C0C0';
             var colorObject;
 
-            if (record.get('PlannedEndDate')) {
-              colorObject = Rally.util.HealthColorCalculator.calculateHealthColorForPortfolioItemData(record, 'PercentDoneByStoryPlanEstimate');
+            //if (record.get('PlannedEndDate')) {
+              colorObject = Rally.util.HealthColorCalculator.calculateHealthColorForPortfolioItemData(record.data, 'PercentDoneByStoryCount');
               color = colorObject.hex;
-            }
+            //}
+            console.log('colorObject', record.get('Name'), record.get('PercentDoneByStoryCount'), colorObject);
+            console.dir(record);
 
             this._chartData.push({
                 name: record.get('FormattedID'),
@@ -3081,12 +3089,14 @@
             this.store = Ext.create('Rally.data.wsapi.artifact.Store', {
                 models: ['PortfolioItem/Feature'],
                 fetch: [
+                  'Name',
+                  'PercentDoneByStoryCount', 'PercentDoneByStoryPlanEstimate',
                   'Release[Name;ReleaseStartDate;ReleaseDate]',
                   'PreliminaryEstimate[Value]',
                   'LateChildCount',
                   'AcceptedLeafStoryPlanEstimateTotal', 'AcceptedLeafStoryCount',
                   'LeafStoryCount', 'LeafStoryPlanEstimateTotal', 'UnEstimatedLeafStoryCount',
-                  'PlannedStartDate', 'PlannedEndDate', 'ActualStartDate',
+                  'PlannedStartDate', 'PlannedEndDate', 'ActualStartDate', 'ActualEndDate',
                   'UserStories:summary[ScheduleState;PlanEstimate;ScheduleState+Blocked]'
                 ],
                 useShallowFetch: true,
