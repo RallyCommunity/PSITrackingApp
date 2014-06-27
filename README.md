@@ -14,3 +14,4 @@ It also give dashboard metrics for tracking the progress of the PSI / Release. T
 
 Screenshot
 ==========
+![screen shot 2014-06-27 at 4 31 55 pm](https://cloud.githubusercontent.com/assets/701752/3417589/d9905e78-fe3a-11e3-8eb6-7c29caeae1df.png)
