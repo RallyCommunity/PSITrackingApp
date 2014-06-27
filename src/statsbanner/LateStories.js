@@ -85,7 +85,6 @@
         _onClickLateStories: function() {
           var record = this.store.getAt(0);
           //record = _(this.store.getRange()).filter(function (r) { return r.data.UserStories !== ''; }).first();
-          console.dir(record);
 
           var
             filters = this._filterPopover(record.data),

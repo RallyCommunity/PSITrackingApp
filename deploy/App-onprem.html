@@ -1568,7 +1568,6 @@
         _onClickLateStories: function() {
           var record = this.store.getAt(0);
           //record = _(this.store.getRange()).filter(function (r) { return r.data.UserStories !== ''; }).first();
-          console.dir(record);
 
           var
             filters = this._filterPopover(record.data),
@@ -2487,8 +2486,6 @@
               colorObject = Rally.util.HealthColorCalculator.calculateHealthColorForPortfolioItemData(record.data, 'PercentDoneByStoryCount');
               color = colorObject.hex;
             //}
-            console.log('colorObject', record.get('Name'), record.get('PercentDoneByStoryCount'), colorObject);
-            console.dir(record);
 
             this._chartData.push({
                 name: record.get('FormattedID'),
