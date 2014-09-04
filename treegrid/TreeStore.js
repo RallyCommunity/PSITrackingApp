@@ -187,10 +187,10 @@
 
       if (this.enableHierarchy) {
         this.childLevelSorters = [
-          {
-          property: 'TaskIndex',
-          direction: 'ASC'
-        },
+        //   {
+        //   property: 'TaskIndex',
+        //   direction: 'ASC'
+        // },
         {
           property: Rally.data.Ranker.getRankField(this.model),
           direction: 'ASC'
