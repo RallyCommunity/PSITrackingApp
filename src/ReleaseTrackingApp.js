@@ -173,9 +173,15 @@
           toggle: this._onToggle,
           recordupdate: this._publishContentUpdatedNoDashboardLayout,
           recordcreate: this._publishContentUpdatedNoDashboardLayout,
+          afterrender : function() { 
+            console.log("afterrender",this);
+            this.setWidth(this.getWidth()+1);
+            console.log("afterrender",this.getWidth());
+            // console.log(this.getGridOrBoard()); //.getView().refresh(true);
+          },
           scope: this
         },
-        height: Math.max(this.getAvailableGridBoardHeight(), 150)
+        height: Math.max(this.getAvailableGridBoardHeight()-50, 150)
       });
     },
 
