@@ -49,7 +49,7 @@
       expandedCollectionNames: {
         hierarchicalrequirement: ['Children', 'Defects', 'Tasks','TestCases'],
         defect: ['Tasks','TestCases'],
-        defectsuite: ['Defects','Tasks'],
+        defectsuite: ['Defects','Tasks','TestCases'],
         testset: ['Tasks', 'TestCases']
       },
 
@@ -58,7 +58,7 @@
        * @private
        */
       childToParentTypeMap: {
-        defect: ['DefectSuite', 'Requirement'],
+        defect: ['DefectSuites', 'Requirement'],
         hierarchicalrequirement: ['Parent', 'PortfolioItem'], // NOTE: needs to be added for generic case, but will kill expanding anything but UserStory currently
         task: ['WorkProduct'],
         testcase: ['WorkProduct']
@@ -94,9 +94,7 @@
       },
 
       getChildModelTypePaths: function(parentTypes) {
-        //console.log('gcmtp', parentTypes);
         return _.reduce(Ext.Array.from(parentTypes), function(childTypes, parentType) {
-          //console.log(childTypes, parentType, this.parentChildTypeMap[parentType]);
           return _.union(childTypes, _.pluck(this.parentChildTypeMap[parentType], "typePath"));
         }, [], this);
       }
@@ -225,7 +223,6 @@
 
     onBeforeExpandNode: function (node, eOpts) {
       this.expandingNode = node;
-      //console.log('expanding', node);
     },
 
     isHierarchyEnabled: function() {
@@ -317,10 +314,8 @@
       if(this.enableHierarchy) {
         if (this.expandingNode && this.isRootNode(this.expandingNode)) {
           //return _.intersection(this._getModelTypePaths(), this.self.getChildModelTypePaths(this.parentTypes));
-          //console.log('returning parentTypes', this.parentTypes);
-          return this.parentTypes;
+           return this.parentTypes;
         }
-        //console.log('gct', this.getExpandingNodeTypePath(), this.self.getChildModelTypePaths(this.getExpandingNodeTypePath()), this.self.expandedCollectionNames);
 
         return this.self.getChildModelTypePaths(Ext.Array.from(this.getExpandingNodeTypePath()));
       }
@@ -340,7 +335,7 @@
 
     _getCollectionFetchNames: function() {
       var collectionFetchNames = [];
-      // Honestly not sure why I need to do this :)
+       // Honestly not sure why I need to do this :)
       if (this.isRootNode(this.expandingNode)) {
         _.each(Ext.Array.from(this.parentTypes), function (type) {
           collectionFetchNames = _.union(collectionFetchNames, this.self.expandedCollectionNames[type.toLowerCase()]);
@@ -482,11 +477,13 @@
       if (childItemTypes){
         _.each(childItemTypes, function(childType) {
           if (childType.hasOwnProperty('customTraversal')) {
+
             customTraversal.push(childType.customTraversal);
           }
         });
       }
-      return [
+
+      var filters = [
         Rally.data.wsapi.Filter.or(_.map(_.union(this.getAllParentFieldTypes(), customTraversal), function(name) {
         return {
           property: name,
@@ -495,6 +492,7 @@
         };
       }))
       ];
+      return filters;
     },
 
     filter: function(filters) {
