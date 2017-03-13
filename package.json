@@ -1,0 +1,16 @@
+{
+  "name": "ReleaseTrackingBoard",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+      "grunt": "~0.4.5",
+      "grunt-cli": "~0.1.9",
+      "grunt-contrib-jasmine": "1.0.3",
+      "grunt-contrib-jshint": "~0.7.2",
+      "grunt-contrib-connect": "0.11.2",
+      "rally-sdk2-test-utils": "0.1.3"
+  },
+  "scripts": {
+    "test": "grunt"
+  }
+}
