@@ -42,7 +42,7 @@
             '<div class="expanded-widget">',
             '<span style="cursor: pointer">',
             '<div class="stat-title">Late Stories</div>',
-            '<div class="stat-metric">',
+            '<div class="stat-metric late">',
             '<div class="metric-icon icon-story"></div>{activeCount}',
             '<div class="stat-secondary">Late</div>',
             '</span>',
@@ -106,7 +106,7 @@
             record: record,
             //filters: filters,
             store: store,
-            headerTitle: 'User Stories Assigned to Later Releases or Iteration',
+            title: 'User Stories Assigned to Later Releases or Iteration',
             width: 800
           }).show();
         },

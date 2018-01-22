@@ -3,992 +3,10 @@
 <head>
     <title>Release Tracking Board</title>
 
-    <script type="text/javascript" src="/apps/2.0rc3/sdk.js"></script>
+    <script type="text/javascript" src="/apps/2.1/sdk.js"></script>
 
     <script type="text/javascript">
         Rally.onReady(function () {
-                (function () {
-  var Ext = window.Ext4 || window.Ext;
-
-  Ext.define('Rally.ui.renderer.template.FormattedIDTemplate2', {
-    override: 'Rally.ui.renderer.template.FormattedIDTemplate',
-
-    createIcon: function(data){
-      if (this.showIcon === false) {
-        return '';
-      }
-
-      var className = '';
-      switch (data._type.toLowerCase().split('/')[0]) {
-        case 'userstory':
-          case 'hierarchicalrequirement':
-          className = 'story';
-          break;
-        case 'defect':
-          className = 'defect';
-          break;
-        case 'task':
-          className = 'task';
-          break;
-        case 'testcase':
-          className = 'test-case';
-          break;
-        case 'defectsuite':
-          className = 'defect-suite';
-          break;
-        case 'testset':
-          className = 'test-set';
-          break;
-        case 'portfolioitem':
-          className = 'portfolioitem';
-          break;
-      }
-
-      return className ? '<span class="artifact-icon icon-' + className + '"></span>' : className;
-    }
-  });
-}());
-
-                (function() {
-  var Ext = window.Ext4 || window.Ext;
-
-  var wsapiMaxPageSize = 200;
-
-  /**
-   * A data store which can retrieve hierarchical artifact data.  In general this class will not be
-   * instantiated directly but will instead be created by Rally.data.wsapi.TreeStoreBuilder:
-   *
-   *      Ext.create('Rally.data.wsapi.TreeStoreBuilder').build({
-   *          models: ['userstory'],
-   *          autoLoad: true,
-   *          enableHierarchy: true
-   *      }).then({
-   *          success: function(store) {
-   *              //use the store
-   *          }
-   *      });
-   *
-   * @experimental
-   */
-  Ext.define('Rally.data.wsapi.TreeStore', {
-
-    // Client Metrics Note: WsapiTreeStore is too low level to record its load begins/ends. The problem is
-    // client metrics can only reliably keep track of one load per component at a time. WsapiTreeStore makes
-    // no guarantee that only one load will happen at a time. It's better to measure the component that is using
-    // the store. All is not lost, the actual data requests that WsapiTreeStore makes *are* measured by client metrics.
-
-    requires: [
-      'Deft.promise.Deferred',
-      'Rally.data.ModelFactory'
-    ],
-    extend: 'Ext.data.TreeStore',
-    alias: 'store.rallywsapitreestore',
-    mixins: {
-      messageable: 'Rally.Messageable',
-      findRecords: 'Rally.data.WsapiFindRecords',
-      recordUpdatable: 'Rally.data.wsapi.RecordUpdatable',
-      clientMetrics: 'Rally.clientmetrics.ClientMetricsRecordable'
-    },
-
-    statics: {
-      wsapiMaxPageSize: wsapiMaxPageSize,
-
-      /**
-       * @property
-       * @private
-       */
-      expandedCollectionNames: {
-        hierarchicalrequirement: ['Children', 'Defects', 'Tasks','TestCases'],
-        defect: ['Tasks','TestCases'],
-        defectsuite: ['Defects','Tasks'],
-        testset: ['Tasks', 'TestCases']
-      },
-
-      /**
-       * @property
-       * @private
-       */
-      childToParentTypeMap: {
-        defect: ['DefectSuite', 'Requirement'],
-        hierarchicalrequirement: ['Parent', 'PortfolioItem'], // NOTE: needs to be added for generic case, but will kill expanding anything but UserStory currently
-        task: ['WorkProduct'],
-        testcase: ['WorkProduct']
-      },
-
-      /**
-       * @property
-       * @private
-       */
-      parentChildTypeMap: {
-        hierarchicalrequirement: [
-          {typePath: 'defect', collectionName: 'Defects'},
-          {typePath: 'hierarchicalrequirement', collectionName: 'Children'}, // NOTE: will not work until childToParentTypeMap has hierarchicalrequirement added in
-          {typePath: 'task', collectionName: 'Tasks'},
-          {typePath: 'testcase', collectionName: 'TestCases'}
-        ],
-        defect: [
-          {typePath: 'task', collectionName: 'Tasks'},
-          {typePath: 'testcase', collectionName: 'TestCases'}
-        ],
-        defectsuite: [
-          {typePath: 'task', collectionName: 'Tasks'},
-          {typePath: 'testcase', collectionName: 'TestCases'}
-        ],
-        testset: [
-          {typePath: 'task', collectionName: 'Tasks'},
-          {typePath: 'testcase', collectionName: 'TestCases', customTraversal: 'TestSet'}
-        ]
-      },
-
-      isParentType: function(parentType) {
-        return _.has(this.parentChildTypeMap, parentType);
-      },
-
-      getChildModelTypePaths: function(parentTypes) {
-        //console.log('gcmtp', parentTypes);
-        return _.reduce(Ext.Array.from(parentTypes), function(childTypes, parentType) {
-          //console.log(childTypes, parentType, this.parentChildTypeMap[parentType]);
-          return _.union(childTypes, _.pluck(this.parentChildTypeMap[parentType], "typePath"));
-        }, [], this);
-      }
-    },
-
-    /**
-     * @cfg {Number}
-     * The starting page to be retrieved
-     */
-    currentPage: 1,
-
-    /**
-     * @cfg {Number}
-     * The number of records to retrieve per page.
-     */
-    pageSize: 25,
-
-    /**
-     * The data scoping to be applied.
-     * @cfg {Object} context
-     * @cfg {String} context.workspace The ref of the workspace to scope to
-     * @cfg {String} context.project The ref of the project to scope to.  Specify null to query the entire specified workspace.
-     * @cfg {Boolean} context.projectScopeUp Whether to scope up the project hierarchy
-     * @cfg {Boolean} context.projectScopeDown Whether to scope down the project hierarchy
-     */
-    context: undefined,
-
-    /**
-     * The wsapi version to use when automatically retrieving a model before loading.
-     * By default the wsapi version of the specified model is used.
-     * @cfg {String/Number} wsapiVersion
-     */
-    wsapiVersion: undefined,
-
-    nodeParam: undefined,
-
-    /**
-     * The model for handling root level and child level items (required)
-     * @cfg {@link Rally.domain.WsapiModel} model
-     */
-    model: undefined,
-
-    /**
-     * The attribute types to render as root items (required)
-     * @cfg {Array} parentTypes
-     */
-    parentTypes: [],
-
-    /**
-     * @cfg {String[]} fetch
-     * The fields to be retrieved using shallowFetch instead of a regular fetch.
-     */
-    fetch: undefined,
-
-    /**
-     * @cfg {Boolean}
-     *
-     * True to set record's 'leaf' property to true when children are present.
-     */
-    enableHierarchy: false,
-
-    /**
-     * @property
-     * @private
-     */
-    childLevelSorters: [],
-
-    /**
-     * @cfg {Boolean}
-     *
-     * False to have expanding nodes ignore Project Scope settings.
-     */
-    expandingNodesRespectProjectScoping: true,
-
-    _getModelFromTypePath: function (typePath) {
-      if (!this.modelTypePathMap) {
-        this.modelTypePathMap = _.transform(this.models, function (r, m) { r[m.typePath] = m; }, {}, this);
-      }
-
-      return this.modelTypePathMap[typePath];
-    },
-
-    constructor: function(config) {
-      this.callParent(arguments);
-      if (this.parentTypes.length === 0 || !this.model) {
-        Ext.Error.raise('You must configure the tree store with parentTypes and a model');
-      }
-
-      if (this.enableHierarchy) {
-        this.childLevelSorters = [
-        //   {
-        //   property: 'TaskIndex',
-        //   direction: 'ASC'
-        // },
-        {
-          property: Rally.data.Ranker.getRankField(this.model),
-          direction: 'ASC'
-        }
-        ];
-      }
-      this.fetch = this._buildFetch(this.fetch, this.model);
-
-      this.addEvents(
-        /**
-         * @event error
-         * Fires when a store load comes back with errors
-         * @param {String[]} errors
-         */
-        'error',
-
-        /**
-         * @event currentPageReset
-         * Fires when the store determines that the current page needs to be reset to the first page of results
-         */
-        'currentPageReset',
-
-        'parenttypeschange'
-      );
-
-      this._decorateModels();
-      this.on('beforeexpand', this.onBeforeExpandNode, this);
-      this.on('load', function () {
-        this.expandingNode = null;
-      }, this);
-    },
-
-    onBeforeExpandNode: function (node, eOpts) {
-      this.expandingNode = node;
-      //console.log('expanding', node);
-    },
-
-    isHierarchyEnabled: function() {
-      return this.enableHierarchy === true;
-    },
-
-    setRootNode: function(root, preventLoad) {
-      this.tree.on('rootchange', this._decorateModels, this, {single: true});
-      this.callParent([root, preventLoad || !this.autoLoad]);
-    },
-
-    setParentTypes: function (parentTypes) {
-      this.parentTypes = _.map(Ext.Array.from(parentTypes), function (t) { return t.toLowerCase(); });
-      this.fireEvent('parenttypeschange', this.parentTypes);
-    },
-
-    remove: function(records) {
-      _.invoke(Ext.Array.from(records), 'remove');
-    },
-
-    indexOf: function(record) {
-      return this.getRootNode().indexOf(record);
-    },
-
-    insert: function(index, records) {
-      _.each(Ext.Array.from(records), function(record) {
-        this.getRootNode().insertChild(index, record);
-      }, this);
-    },
-
-    getAllParentFieldTypes: function() {
-      // going from this --> { defect: ['a', 'b'], userstory: ['c'] }
-      // to this         --> ['a', 'b', 'c']
-      // the apply() is necessary, because values() will return an array of arrays,
-      // and union() wants individual arguments
-
-      var parentFieldNames = [];
-      if(this.enableHierarchy) {
-        //console.log('gct', this.getChildTypes());
-        _.each(this.getChildTypes(), function (type) {
-          parentFieldNames = _.union(parentFieldNames, this.getParentFieldTypesByChildType(type.toLowerCase()));
-        }, this);
-      }
-
-      //console.log('pfn', parentFieldNames);
-      var entp = this.getExpandingNodeTypePath().toLowerCase();
-
-      if (entp === 'hierarchicalrequirement') {
-        //console.log('US -> US');
-        parentFieldNames = _.difference(parentFieldNames, ['PortfolioItem']);
-      }
-
-      if (entp.indexOf('portfolioitem') >= 0 && _.contains(this.getChildTypes(), 'hierarchicalrequirement')) {
-        //console.log('PI -> US');
-        parentFieldNames = ['PortfolioItem'];
-      }
-      //console.log('pfn after', parentFieldNames);
-
-      return parentFieldNames;
-    },
-
-    getParentFieldTypesByChildType: function(childType) {
-      //var model = this.model.getArtifactComponentModel(childType);
-      var model = this._getModelFromTypePath(childType);
-      //console.log(childType);
-      return _.filter(this.self.childToParentTypeMap[childType.toLowerCase()], function(field) {
-        if (_.isFunction(this.model.getArtifactComponentModel)) {
-          return this.model.getArtifactComponentModel(field) || model.hasField(field);
-        } else {
-          return model.hasField(field);
-        }
-      }, this);
-    },
-
-    getExpandingNodeTypePath: function () {
-      var r = this.parentTypes[0];
-
-      //console.log('this.expandingNode', this.expandingNode);
-      //console.log('isRoot', this.isRootNode(this.expandingNode));
-      if (this.expandingNode && !this.isRootNode(this.expandingNode)) {
-        r = this.expandingNode.get('_type');
-      }
-
-      //console.log('gentp', r.toLowerCase());
-      return r.toLowerCase();
-    },
-
-    getChildTypes: function() {
-      if(this.enableHierarchy) {
-        if (this.expandingNode && this.isRootNode(this.expandingNode)) {
-          //return _.intersection(this._getModelTypePaths(), this.self.getChildModelTypePaths(this.parentTypes));
-          //console.log('returning parentTypes', this.parentTypes);
-          return this.parentTypes;
-        }
-        //console.log('gct', this.getExpandingNodeTypePath(), this.self.getChildModelTypePaths(this.getExpandingNodeTypePath()), this.self.expandedCollectionNames);
-
-        return this.self.getChildModelTypePaths(Ext.Array.from(this.getExpandingNodeTypePath()));
-      }
-      return [];
-    },
-
-    _getModelTypePaths: function() {
-      if(_.isFunction(this.model.getArtifactComponentModels)) {
-        return _.pluck(this.model.getArtifactComponentModels(),'typePath');
-      }
-      return [this.model.typePath];
-    },
-
-    isRootNode: function(node) {
-      return _.isEmpty(node) || isNaN(node.get('ObjectID'));
-    },
-
-    _getCollectionFetchNames: function() {
-      var collectionFetchNames = [];
-      // Honestly not sure why I need to do this :)
-      if (this.isRootNode(this.expandingNode)) {
-        _.each(Ext.Array.from(this.parentTypes), function (type) {
-          collectionFetchNames = _.union(collectionFetchNames, this.self.expandedCollectionNames[type.toLowerCase()]);
-        }, this);
-      } else {
-        _.each(Ext.Array.from(this.getChildTypes()), function(type) {
-          collectionFetchNames = _.union(collectionFetchNames, _.pluck(this.self.parentChildTypeMap[type], "collectionName"));
-        },this);
-      }
-      return collectionFetchNames;
-    },
-
-    _decorateModels: function() {
-      if (_.isFunction(this.model.getArtifactComponentModels)) {
-        _.each(this.model.getArtifactComponentModels(), Ext.data.NodeInterface.decorate, Ext.data.NodeInterface);
-      }
-    },
-
-    _errors: [],
-    /**
-     * @inheritdoc
-     */
-    load: function(options) {
-      this.recordLoadBegin({description: 'tree store load', component: this.requester});
-
-      this._hasErrors = false;
-
-      this.on('beforeload', function(store, operation) {
-        delete operation.id;
-      }, this, { single: true });
-
-      options = this._configureLoad(options);
-
-      var deferred = Ext.create('Deft.Deferred'),
-      originalCallback = options.callback,
-      me = this;
-
-      options.callback = function (records, operation, success) {
-        me.dataLoaded = true;
-
-        Ext.callback(originalCallback, options.scope || me, arguments);
-        options.callback = originalCallback;
-        if (success) {
-          deferred.resolve(records, operation);
-        } else {
-          deferred.reject(operation);
-        }
-      };
-
-      this.callParent([options]);
-
-
-
-      return deferred.promise;
-    },
-
-    _configureLoad: function(options) {
-      options = options || {};
-
-      if (Ext.isFunction(options)) {
-        options = {callback: options};
-      }
-
-      if (this.isRootNode(options.node)) {
-        this._configureProxy(true);
-        this._configureTopLevelLoad(options);
-      } else {
-        if (!this.enableHierarchy) {
-          Ext.Error.raise('You cannot load child nodes if hierarchy is not enabled.');
-        }
-
-        this._configureProxy(false);
-        this._configureChildLoad(options);
-      }
-
-      options.useShallowFetch = true; //true;
-      options.fetch = options.fetch || this._buildFetch(this.fetch, this.model);
-
-      // HACK: The list of fields can become too long and cause a 413 error. This fixes the error at the cost of a fetch=true
-      options.fetch = true;
-
-      //console.log('options', options);
-      //console.log('gENTY', this.getExpandingNodeTypePath());
-      //console.log('pT', this.parentTypes);
-      //console.log(_.contains(this.parentTypes, this.getExpandingNodeTypePath()));
-
-      if (this.expandingNodesRespectProjectScoping ||
-          this.isRootNode(this.expandingNode) ||
-         (_.contains(this.parentTypes, this.getExpandingNodeTypePath()) && !this.expandingNode)) {
-        options.context = this.context;
-      } else {
-        options.context = this.context;
-        if (!options.context) {
-          options.context = Rally.getApp().getContext().getDataContext();
-        }
-        options.context.project = null;
-      }
-      options.requester = this;
-
-      if (options.clearOnLoad === false) {
-        var clearOnLoad = this.clearOnLoad;
-        this.clearOnLoad = false;
-        this.on('load', function() {
-          this.clearOnLoad = clearOnLoad;
-        }, this, {single: true});
-      }
-
-      return options;
-    },
-
-    _configureChildLoad: function(options) {
-      options.filters = this._getChildNodeFilters(options.node);
-      options.sorters = this.childLevelSorters || [{
-        property: Rally.data.Ranker.getRankField(this.model),
-        direction: 'ASC'
-      }];
-    },
-
-    _configureTopLevelLoad: function(options) {
-      options.params = options.params || {};
-      options.params.pagesize = this.pageSize;
-      options.params.start = this.pageSize * (this.currentPage - 1);
-      //options.filter = Rally.data.wsapi.Filter.or(_(this.parentTypes).map(function(type) {
-        //if (this.self.childToParentTypeMap[type]) {
-          //return {
-            //property: this.self.childToParentTypeMap[type],
-            //operator: '=',
-            //value: null
-          //};
-        //} else {
-          //return null;
-        //}
-      //}, this).filter(function (r) { return r !== null; }).value());
-    },
-
-    _getChildNodeFilters: function(node) {
-      var childItemTypes = this.self.parentChildTypeMap[node.get('_type')];
-      var customTraversal = [];
-      if (childItemTypes){
-        _.each(childItemTypes, function(childType) {
-          if (childType.hasOwnProperty('customTraversal')) {
-            customTraversal.push(childType.customTraversal);
-          }
-        });
-      }
-      return [
-        Rally.data.wsapi.Filter.or(_.map(_.union(this.getAllParentFieldTypes(), customTraversal), function(name) {
-        return {
-          property: name,
-          operator: '=',
-          value: node.get('_ref')
-        };
-      }))
-      ];
-    },
-
-    filter: function(filters) {
-      this.filters.addAll(filters);
-      this._resetCurrentPage();
-      this.load();
-    },
-
-    clearFilter: function(suppressEvent) {
-      this._resetCurrentPage();
-      this.filters.clear();
-
-      if (!suppressEvent) {
-        this.load();
-      }
-    },
-
-    getAt: function(id) {
-      return this.getNodeById(id);
-    },
-
-    getTotalCount: function() {
-      return this.totalCount;
-    },
-
-    nextPage: function() {
-      this._setCurrentPage(this.currentPage + 1);
-      this.load();
-    },
-
-    previousPage: function() {
-      this._setCurrentPage(this.currentPage - 1);
-      this.load();
-    },
-
-    loadPage: function(pageNum) {
-      this._setCurrentPage(pageNum);
-      this.load();
-    },
-
-    _setCurrentPage: function(pageNum) {
-      var maxPage = Math.ceil(this.getTotalCount() / this.pageSize);
-      this.currentPage = Math.min(Math.max(pageNum, 1), maxPage);
-    },
-
-    _resetCurrentPage: function() {
-      if (this.dataLoaded === true) {
-        this.fireEvent('currentpagereset');
-        this.currentPage = 1;
-      }
-    },
-
-    _hasErrors: false,
-
-    hasErrors: function() {
-      return this._hasErrors;
-    },
-
-    onProxyLoad: function(operation) {
-      if (operation.error && operation.error.errors && operation.error.errors.length > 0) {
-        this._hasErrors = true;
-        this.fireEvent('error', operation.error.errors);
-      } else {
-        var resultSet = operation.getResultSet();
-        if (resultSet) {
-          _.each(resultSet.records, this._instrumentRecord, this);
-          if (this.isRootNode(operation.node)) {
-            this.totalCount = resultSet.total;
-            if (this.totalCount > 0 && resultSet.count === 0 && this._attemptingToResetCurrentPage !== true) {
-              this._attemptingToResetCurrentPage = true;
-              this._resetCurrentPage();
-              this.load();
-              return;
-            }
-          }
-        }
-      }
-
-      //console.log('onProzyLoad', operation);
-
-      this._attemptingToResetCurrentPage = false;
-
-      if(!this.clearOnLoad && (!operation.node || operation.node === this.getRootNode())) {
-        var recordsById = _.indexBy(operation.getRecords(), function(record) { return record.getId(); });
-        _.each(Ext.clone(operation.node.childNodes), function(childNode) {
-          var record = recordsById[childNode.getId()];
-          if(!record) {
-            childNode.remove(false);
-          } else if(record.get('VersionId') !== childNode.get('VersionId')) {
-
-            var newData = _(record.raw).keys().reduce(function(accum, key) {
-              accum[key] = record.get(key);
-              return accum;
-            }, {});
-
-            childNode.set(newData);
-            childNode.commit();
-          }
-        });
-      }
-
-      this.recordLoadEnd();
-      this.recordLoadBegin({description: 'tree store after load callParent'});
-
-      this.callParent(arguments);
-
-      // For some reason, when expanding top level stories, the bottom level PI becomes the child.
-      // THIS IS A HACK :) --Colin
-      _.each(operation.node.childNodes, function (node) { node.childNodes = []; node.data.loaded = false; });
-
-      this.recordLoadEnd();
-
-      if (this.ownerTree) {
-        this.ownerTree.fireEvent('afterproxyload');
-      }
-    },
-
-    /**
-     * Calls the specified function for each {@link Ext.data.Model record} in the store, walking down the
-     * entire tree.
-     *
-     * @param {Function} fn The function to call. The {@link Ext.data.Model Record} is passed as the first parameter.
-     * Returning `false` aborts and exits the iteration.
-     * @param {Object} [scope] The scope (this reference) in which the function is executed.
-     * Defaults to the current {@link Ext.data.Model record} in the iteration.
-     */
-    each: function(fn, scope) {
-      this._treeWalkingEach(fn, this.tree.root, scope, true);
-    },
-
-    _treeWalkingEach: function(fn, node, scope, ignoreNode) {
-      _.each(node.childNodes, function(childNode) {
-        if (this._treeWalkingEach(fn, childNode, scope) === false) {
-          return false;
-        }
-      }, this);
-
-      return ignoreNode !== true ? fn.call(scope || node, node) : true;
-    },
-
-    /**
-     * Returns the record node by id
-     * @param {Number/String} id the record id or internal id
-     * @return {Ext.data.NodeInterface}
-     */
-    getNodeById: function(id) {
-      return this.callParent(arguments) ||
-        this.findExactRecord(id);
-    },
-
-    /**
-     * Finds a record in the store that matches the given record.
-     * @param {Rally.domain.WsapiModel/Object/String/Number} record Record to match against. Can also be an object with a _ref property or a ref string or an id.
-     */
-    findExactRecord: function(record) {
-      var recordId = Rally.util.Ref.getOidFromRef(record) || record;
-      return this.getRootNode().findChild(this.model.prototype.idProperty, recordId, true);
-    },
-
-    /**
-     * Reload the specified record.  The current store filters will also be applied.
-     * @param {Rally.data.WsapiModel} record the record to reload
-     * @param {Object} options additional options to be applied to the {Ext.data.Operation}.
-     * @param {Function} options.success callback - @deprecated - use returned promise instead
-     * @param {Function} options.failure callback - @deprecated - use returned promise instead
-     * @param {Object} options.scope callback scope - @deprecated - use returned promise instead
-     * @return {Deft.Promise(Rally.data.WsapiModel)}
-     */
-    reloadRecord: function(record, options) {
-      options = options || {};
-      var deferred = Ext.create('Deft.promise.Deferred'),
-      operationConfig = Ext.merge({
-        action: 'read',
-        limit: 1,
-        requester: this,
-        context: this.context,
-        filters: [{
-          property: 'ObjectID',
-          value: record.getId()
-        }],
-        params: {}
-      }, options), modelToLoadFrom, recordTypePath;
-
-      if (_.isFunction(this.model.getArtifactComponentModels)) {
-        recordTypePath = record.self.typePath;
-        if (this.model.getArtifactComponentModel(recordTypePath.toLowerCase())) {
-          modelToLoadFrom = this.model;
-          operationConfig.params.types = recordTypePath;
-        } else {
-          modelToLoadFrom = record.self;
-        }
-      } else {
-        modelToLoadFrom = record.self;
-      }
-
-      operationConfig.useShallowFetch = true;
-      operationConfig.fetch = this.fetch ?
-        _.union(this.fetch, _.pluck(modelToLoadFrom.getAssociationFields(), 'name')) :
-        this._buildFetch(this.fetch, modelToLoadFrom);
-
-      if (record.parentNode === this.getRootNode()) {
-        operationConfig.filters = operationConfig.filters.concat(this.filters.getRange());
-      }
-
-      modelToLoadFrom.getProxy().read(Ext.create('Ext.data.Operation', operationConfig), function(op) {
-        if(op.wasSuccessful() && op.getRecords() && op.getRecords().length) {
-          var record = op.getRecords()[0];
-          this._instrumentRecord(record);
-          Ext.callback(options.success, options.scope, [record]);
-          deferred.resolve(record);
-        } else {
-          Ext.callback(options.failure, options.scope, [op]);
-          deferred.reject(op);
-        }
-      }, this);
-
-      return deferred.promise;
-    },
-
-    /**
-     * Determines if a given record matches the store filters and would be placed at the top level of the tree.
-     * @param {Rally.domain.WsapiModel} record The record to interrogate
-     * @return {Deft.promise.Promise} A promise that resolves to the boolean answer
-     */
-    doesRecordMatchStoreFilters: function(record) {
-      var deferred = Ext.create('Deft.promise.Deferred'),
-      operation = new Ext.data.Operation({
-        action: 'read',
-        fetch: false,
-        params: {
-          query: Rally.data.wsapi.Filter.and(
-            this.filters.getRange().concat([
-            new Rally.data.wsapi.Filter({
-            property: 'ObjectID',
-            operator: '=',
-            value: Rally.util.Ref.getOidFromRef(record)
-          })
-          ])
-          ).toString()
-        },
-        limit: 1,
-        requester: this
-      }),
-      callback = function(operation) {
-        deferred.resolve(!_.isEmpty(operation.getRecords()));
-      };
-
-      this.proxy.setExtraParam('types', this._getTypesForLevel(true));
-
-      this.model.getProxy().read(operation, callback, this);
-      return deferred.promise;
-    },
-
-    doesRecordMatchChildTypes: function(record) {
-      return _(this.getChildTypes()).invoke('toLowerCase').contains(record.self.typePath.toLowerCase());
-    },
-
-    _configureProxy: function (forTopLevel) {
-      this.proxy = this.model.getProxy();
-
-      var types = _.isFunction(this.model.getArtifactComponentModels) ? this._getTypesForLevel(forTopLevel) : this.model.elementName;
-
-      this.proxy.setExtraParam('types', types);
-    },
-
-    _getTypesForLevel: function(forTopLevel) {
-      var types;
-      if (forTopLevel) {
-        types = this.parentTypes.join(',');
-      } else {
-        types = this.getChildTypes().join(',');
-      }
-      return types;
-    },
-
-    _instrumentRecord: function(record) {
-      var leafCount = this._getLeafCount(record),
-      isLeaf = leafCount < 1 || !this.enableHierarchy;
-
-      record.set('leaf', isLeaf);
-      record.set('leafCount', leafCount);
-    },
-
-    _getLeafCount: function(record) {
-      var typePath = record.get('_type').toLowerCase(),
-      expandedCollectionNames = Ext.Array.from(this.self.expandedCollectionNames[typePath]);
-      //console.log(this.self.expandedCollectionNames, typePath, this.self.expandedCollectionNames[typePath]);
-
-      return _.reduce(expandedCollectionNames, function(accumulator, collectionName) {
-        //console.log(collectionName, record.get(collectionName));
-        //console.dir(record);
-        var collectionVal = record.get(collectionName);
-        if (collectionVal && collectionVal.Count) {
-          accumulator += collectionVal.Count;
-        }
-
-        return accumulator;
-      }, 0);
-    },
-
-    _buildFetch: function(fetch, model) {
-      if(fetch === true) {
-        return fetch;
-      }
-      if(!fetch) {
-        fetch = _.pluck(model.getNonCollectionFields(), 'name');
-      }
-      fetch = _.union(_.isArray(fetch) ? fetch : fetch.split(","), ['ObjectID', 'VersionId']);
-      if(this.enableHierarchy && fetch !== true) {
-        fetch = _.union(fetch, this._getCollectionFetchNames(), this.getAllParentFieldTypes());
-      }
-
-      return _.filter(fetch, function (f) { return f !== undefined; });
-    },
-
-    setFetch: function(fetch) {
-      this.fetch = this._buildFetch(fetch);
-    }
-  });
-})();
-
-                (function() {
-  var Ext = window.Ext4 || window.Ext;
-
-  /**
-   * Constructs Rally.data.wsapi.TreeStore instances.
-   *
-   *      Ext.create('Rally.data.wsapi.TreeStoreBuilder').build({
-   *          models: ['userstory'],
-   *          autoLoad: true,
-   *          enableHierarchy: true
-   *      }).then({
-   *          success: function(store) {
-   *              //use the store
-   *          }
-   *      });
-   *
-   * @experimental
-   */
-  Ext.define('Rally.data.wsapi.TreeStoreBuilder', {
-    extend: 'Rally.data.DataStoreBuilder',
-    requires: [
-      'Rally.data.wsapi.TreeStore',
-      'Rally.data.ModelFactory'
-    ],
-
-    build: function(config) {
-      config = _.clone(config || {});
-      config.storeType = 'Rally.data.wsapi.TreeStore';
-
-      return this.callParent([config]);
-    },
-
-    loadModels: function(config) {
-      return this.callParent([config]).then({
-        success: function(models) {
-          var pis = [];
-
-          _.each(models, function (model) {
-            var typePath = model.typePath.toLowerCase();
-
-            if (model.isPortfolioItem()) {
-              Rally.data.wsapi.TreeStore.expandedCollectionNames[typePath] = ['Children'];
-              Rally.data.wsapi.TreeStore.childToParentTypeMap[typePath] = ['Parent'];
-              pis[model.ordinal] = model;
-
-              if (model.isLowestLevelPortfolioItem()) {
-                Rally.data.wsapi.TreeStore.expandedCollectionNames[typePath] = ['UserStories'];
-                Rally.data.wsapi.TreeStore.parentChildTypeMap[typePath] = [{ typePath: 'hierarchicalrequirement', collectionName: 'UserStories' }];
-              }
-            }
-          });
-
-          _.each(pis, function (model) {
-            if (!model) { return; }
-            var typePath = model.typePath.toLowerCase();
-            var pm = pis[model.ordinal + 1];
-
-            if (pm) {
-              Rally.data.wsapi.TreeStore.parentChildTypeMap[pm.typePath.toLowerCase()] = [{ typePath: typePath, collectionName: 'Children' }];
-            }
-          });
-
-          return this._setupTreeModel(this._getComponentModels(models), config);
-        },
-        scope: this
-      });
-    },
-
-    _getComponentModels: function(models) {
-      return _.reduce(models, function(result, model) {
-        if(_.isFunction(model.getArtifactComponentModels)) {
-          return result.concat(model.getArtifactComponentModels());
-        } else {
-          return result.concat(model);
-        }
-      }, []);
-    },
-
-    _setupTreeModel: function(models, config) {
-      var modelsToLoad = [];
-
-      config.parentTypes = this._getParentTypes(models, config);
-      if(config.enableHierarchy) {
-        modelsToLoad = _.filter(this._getChildModelsToLoad(config), function (m) { return m !== undefined; });
-      }
-
-      if (modelsToLoad.length > 0) {
-        return this._loadChildModels(modelsToLoad, models, config);
-      }
-
-      return Deft.Promise.when(models);
-    },
-
-    _getChildModelsToLoad: function(config) {
-      return _.difference(Rally.data.wsapi.TreeStore.getChildModelTypePaths(config.parentTypes), config.parentTypes);
-      //return [];
-    },
-
-    _loadChildModels: function(modelsToLoad, loadedModels, config) {
-      return Rally.data.ModelFactory.getModels({
-        context: config.context,
-        types: modelsToLoad,
-        requester: config.requester || this
-      }).then({
-        success: function(newModels) {
-          return _.union(loadedModels, _.values(newModels));
-        }
-      });
-    },
-
-    _getParentTypes: function(models, config) {
-      var parentTypes = _.pluck(models, 'typePath');
-
-      if (config.enableHierarchy) {
-        parentTypes = _.filter(parentTypes, Rally.data.wsapi.TreeStore.isParentType, Rally.data.wsapi.TreeStore);
-      }
-
-      return parentTypes;
-    }
-  });
-})();
-
                 (function() {
     var Ext = window.Ext4 || window.Ext;
 
@@ -1151,8 +169,8 @@
                             dataLabels: {
                                 enabled: false
                             },
-                            size: height - 4,
-                            innerSize: height - 14,
+                            size: height - 14,
+                            innerSize: height - 24,
                             enableMouseTracking: false, //turns off chart hover, but for tooltips you'll need this on
                             shadow: false
                         }
@@ -1525,7 +543,7 @@
             '<div class="expanded-widget">',
             '<span style="cursor: pointer">',
             '<div class="stat-title">Late Stories</div>',
-            '<div class="stat-metric">',
+            '<div class="stat-metric late">',
             '<div class="metric-icon icon-story"></div>{activeCount}',
             '<div class="stat-secondary">Late</div>',
             '</span>',
@@ -1589,7 +607,7 @@
             record: record,
             //filters: filters,
             store: store,
-            headerTitle: 'User Stories Assigned to Later Releases or Iteration',
+            title: 'User Stories Assigned to Later Releases or Iteration',
             width: 800
           }).show();
         },
@@ -3213,21 +2231,11 @@
       'Rally.ui.cardboard.plugin.FixedHeader',
       'Rally.ui.cardboard.plugin.Print',
       'Rally.ui.gridboard.plugin.GridBoardAddNew',
-      'Rally.ui.gridboard.plugin.GridBoardOwnerFilter',
-      'Rally.ui.gridboard.plugin.GridBoardFilterInfo',
-      'Rally.ui.gridboard.plugin.GridBoardArtifactTypeChooser',
       'Rally.ui.gridboard.plugin.GridBoardFieldPicker',
       'Rally.ui.cardboard.plugin.ColumnPolicy',
       'Rally.ui.gridboard.plugin.GridBoardFilterInfo',
-      'Rally.ui.gridboard.plugin.GridBoardFilterControl',
       'Rally.ui.gridboard.plugin.GridBoardToggleable',
       'Rally.ui.grid.plugin.TreeGridExpandedRowPersistence',
-      'Rally.ui.gridboard.plugin.GridBoardExpandAll',
-      'Rally.ui.gridboard.plugin.GridBoardCustomView',
-      'Rally.ui.filter.view.ModelFilter',
-      'Rally.ui.filter.view.OwnerFilter',
-      'Rally.ui.filter.view.OwnerPillFilter',
-      'Rally.ui.filter.view.TagPillFilter',
       'Rally.app.Message',
       'Rally.clientmetrics.ClientMetricsRecordable',
       'Rally.apps.releasetracking.StatsBanner'
@@ -3259,6 +2267,13 @@
         return;
       }
 
+      if (this.down('#statsBanner')) {
+        this.down('#statsBanner').destroy();
+      }
+      if (this.down('#gridBoard')) {
+        this.down('#gridBoard').destroy();
+      }
+
       var typeStore = Ext.create('Rally.data.wsapi.Store', {
         autoLoad: false,
         model: 'TypeDefinition',
@@ -3280,6 +2295,7 @@
       typeStore.load({
         scope: this,
         callback: function (records) {
+          this.lowestLevelPiName = records[0].get('ElementName');
           this.sModelNames = Ext.Array.from(_.first(records).get('TypePath'));
           this.sModelMap = _.transform(records, function (acc, rec) { acc[rec.get('TypePath')] = rec; }, {});
 
@@ -3288,8 +2304,8 @@
             success: function(gridStore) {
               var model = gridStore.model;
               this._addGridBoard(gridStore);
-              gridStore.setParentTypes(this.sModelNames);
-              gridStore.load();
+              // gridStore.setParentTypes(this.sModelNames);
+              // gridStore.load();
             },
             scope: this
           });
@@ -3334,7 +2350,6 @@
     },
 
     _addStatsBanner: function() {
-      this.remove('statsBanner');
       this.add({
         xtype: 'statsbanner',
         itemId: 'statsBanner',
@@ -3350,8 +2365,6 @@
     _addGridBoard: function (gridStore) {
       var context = this.getContext();
 
-      this.remove('gridBoard');
-
       this.gridboard = this.add({
         itemId: 'gridBoard',
         xtype: 'rallygridboard',
@@ -3360,6 +2373,7 @@
         plugins: this._getGridBoardPlugins(),
         modelNames: this._getModelNames(),
         gridConfig: this._getGridConfig(gridStore),
+        cardBoardConfig: this._getBoardConfig(),
         addNewPluginConfig: {
           style: {
             'float': 'left',
@@ -3398,55 +2412,40 @@
       var plugins = ['rallygridboardaddnew'],
       context = this.getContext();
 
-      if (context.isFeatureEnabled('EXPAND_ALL_TREE_GRID_CHILDREN')) {
-        plugins.push('rallygridboardexpandall');
-      }
-
-      if (context.isFeatureEnabled('BETA_TRACKING_EXPERIENCE')) {
-        var filterControlConfig = {
-          cls: 'small gridboard-filter-control',
-          context: context,
-          margin: '3 10 3 7',
-          stateful: true,
-          stateId: context.getScopedStateId('iteration-tracking-filter-button')
-        };
-
-        if (context.isFeatureEnabled('USE_CUSTOM_FILTER_POPOVER_ON_ITERATION_TRACKING_APP')) {
-          _.merge(filterControlConfig, {
-            customFilterPopoverEnabled: true,
-            modelNames: this.modelNames
-          });
-        } else {
-          _.merge(filterControlConfig, {
-            items: [
-              this._createOwnerFilterItem(context),
-              this._createTagFilterItem(context),
-              this._createModelFilterItem(context)
-            ]
-          });
-        }
-
-        plugins.push({
-          ptype: 'rallygridboardfiltercontrol',
-          filterControlConfig: filterControlConfig
-        });
-      } else {
-        plugins.push('rallygridboardownerfilter');
-      }
-
       plugins.push('rallygridboardtoggleable');
       var alwaysSelectedValues = ['FormattedID', 'Name', 'Owner'];
       if (context.getWorkspace().WorkspaceConfiguration.DragDropRankingEnabled) {
         alwaysSelectedValues.push('DragAndDropRank');
       }
 
-      if (!context.isFeatureEnabled('BETA_TRACKING_EXPERIENCE')) {
-        plugins.push({
-          ptype: 'rallygridboardfilterinfo',
-          isGloballyScoped: Ext.isEmpty(this.getSetting('project')),
-          stateId: 'iteration-tracking-owner-filter-' + this.getAppId()
-        });
-      }
+      var whiteListFields = ['Milestones', 'Tags'];
+      plugins.push({
+          ptype: 'rallygridboardinlinefiltercontrol',
+          inlineFilterButtonConfig: {
+            stateful: true,
+            stateId: context.getScopedStateId('filters'),
+            modelNames: this._getModelNames(),
+            inlineFilterPanelConfig: {
+              quickFilterPanelConfig: {
+                defaultFields: [
+                  'ArtifactSearch',
+                  'Owner',
+                  'ModelType'
+                ],
+                addQuickFilterConfig: {
+                  whiteListFields: whiteListFields
+              }
+            },
+            advancedFilterPanelConfig: {
+              advancedFilterRowsConfig: {
+                  propertyFieldConfig: {
+                      whiteListFields: whiteListFields
+                  }
+              }
+            }
+          }
+        }
+      });
 
       plugins.push({
         ptype: 'rallygridboardfieldpicker',
@@ -3478,14 +2477,8 @@
           'Children'
         ],
         alwaysSelectedValues: alwaysSelectedValues,
-        modelNames: this.modelNames,
-        boardFieldDefaults: (this.getSetting('cardFields') && this.getSetting('cardFields').split(',')) ||
-          ['Parent', 'Tasks', 'Defects', 'Discussion', 'PlanEstimate', 'Iteration']
+        modelNames: this._getModelNames()
       });
-
-      if (context.isFeatureEnabled('ITERATION_TRACKING_CUSTOM_VIEWS')) {
-        plugins.push(this._getCustomViewConfig());
-      }
 
       return plugins;
     },
@@ -3501,143 +2494,14 @@
       }
     },
 
-    _getCustomViewConfig: function() {
-      var customViewConfig = {
-        ptype: 'rallygridboardcustomview',
-        stateId: 'iteration-tracking-board-app',
-
-        defaultGridViews: [{
-          model: ['UserStory', 'Defect', 'DefectSuite'],
-          name: 'Defect Status',
-          state: {
-            cmpState: {
-              expandAfterApply: true,
-              columns: [
-                'Name',
-                'State',
-                'Discussion',
-                'Priority',
-                'Severity',
-                'FoundIn',
-                'FixedIn',
-                'Owner'
-              ]
-            },
-            filterState: {
-              filter: {
-                defectstatusview: {
-                  isActiveFilter: false,
-                  itemId: 'defectstatusview',
-                  queryString: '((Defects.ObjectID != null) OR (Priority != null))'
-                }
-              }
-            }
-          }
-        }, {
-          model: ['UserStory', 'Defect', 'TestSet', 'DefectSuite'],
-          name: 'Task Status',
-          state: {
-            cmpState: {
-              expandAfterApply: true,
-              columns: [
-                'Name',
-                'State',
-                'PlanEstimate',
-                'TaskEstimate',
-                'ToDo',
-                'Discussions',
-                'Owner'
-              ]
-            },
-            filterState: {
-              filter: {
-                taskstatusview: {
-                  isActiveFilter: false,
-                  itemId: 'taskstatusview',
-                  queryString: '(Tasks.ObjectID != null)'
-                }
-              }
-            }
-          }
-        }, {
-          model: ['UserStory', 'Defect', 'TestSet'],
-          name: 'Test Status',
-          state: {
-            cmpState: {
-              expandAfterApply: true,
-              columns: [
-                'Name',
-                'State',
-                'Discussions',
-                'LastVerdict',
-                'LastBuild',
-                'LastRun',
-                'ActiveDefects',
-                'Priority',
-                'Owner'
-              ]
-            },
-            filterState: {
-              filter: {
-                teststatusview: {
-                  isActiveFilter: false,
-                  itemId: 'teststatusview',
-                  queryString: '(TestCases.ObjectID != null)'
-                }
-              }
-            }
-          }
-        }]
-      };
-
-      customViewConfig.defaultBoardViews = _.cloneDeep(customViewConfig.defaultGridViews);
-      _.each(customViewConfig.defaultBoardViews, function(view) {
-        delete view.state.cmpState;
-      });
-
-      return customViewConfig;
-    },
-
-    _createOwnerFilterItem: function (context) {
-      var isPillPickerEnabled = context.isFeatureEnabled('BETA_TRACKING_EXPERIENCE'),
-      projectRef = context.getProjectRef();
-
-      if (isPillPickerEnabled) {
-        return {
-          xtype: 'rallyownerpillfilter',
-          margin: '-15 0 5 0',
-          filterChildren: this.getContext().isFeatureEnabled('S58650_ALLOW_WSAPI_TRAVERSAL_FILTER_FOR_MULTIPLE_TYPES'),
-          project: projectRef,
-          showPills: false,
-          showClear: true
-        };
-      } else {
-        return {
-          xtype: 'rallyownerfilter',
-          margin: '5 0 5 0',
-          filterChildren: this.getContext().isFeatureEnabled('S58650_ALLOW_WSAPI_TRAVERSAL_FILTER_FOR_MULTIPLE_TYPES'),
-          project: projectRef
-        };
-      }
-
-    },
-
-    _createTagFilterItem: function (context) {
-      var filterUiImprovementsToggleEnabled = context.isFeatureEnabled('BETA_TRACKING_EXPERIENCE');
+    _getBoardConfig: function() {
       return {
-        xtype: 'rallytagpillfilter',
-        margin: filterUiImprovementsToggleEnabled ? '-15 0 5 0' : '5 0 5 0',
-        showPills: filterUiImprovementsToggleEnabled,
-        showClear: filterUiImprovementsToggleEnabled,
-        remoteFilter: filterUiImprovementsToggleEnabled
-      };
-    },
-
-    _createModelFilterItem: function (context) {
-      return {
-        xtype: 'rallymodelfilter',
-        models: this.modelNames,
-        context: context
+        types: [].concat(this.eModelNames),
+        attribute: 'ScheduleState',
+        columConfig: {
+          fields: (this.getSetting('cardFields') && this.getSetting('cardFields').split(',')) ||
+            [this.lowestLevelPiName, 'Tasks', 'Defects', 'Discussion', 'PlanEstimate', 'Iteration']
+        }
       };
     },
 
@@ -3649,12 +2513,7 @@
       var gridConfig = {
         xtype: 'rallytreegrid',
         store: gridStore,
-        //enableRanking: this.getContext().getWorkspace().WorkspaceConfiguration.DragDropRankingEnabled,
-        //enableRanking: false,
-        //enableBulkEdit: false,
-        //enableEditing: false,
-        columnCfgs: null, //must set this to null to offset default behaviors in the gridboard
-        defaultColumnCfgs: this._getGridColumns(),
+        columnCfgs: this._getGridColumns(),
         model: 'UserStory',
         showSummary: true,
         summaryColumns: this._getSummaryColumnConfig(),
@@ -3798,6 +2657,9 @@
   height: 85px;
   padding-top: 20px;
 }
+.stats-banner .stat-panel .stat-metric.late {
+  padding-top: 25px;
+}
 .stats-banner .stat-panel .stat-metric .metric-percent {
   display: inline;
   font-size: 12px;
@@ -3807,6 +2669,7 @@
   color: #888888;
   font-size: 18px;
   padding-right: 5px;
+  margin-top: 10px;
 }
 .stats-banner .stat-panel .stat-metric .metric-chart {
   position: absolute;
@@ -3824,12 +2687,12 @@
 }
 .stats-banner .stat-panel .stat-metric .metric-chart-text {
   position: absolute;
-  top: 43px;
+  top: 48px;
   width: 100%;
 }
 .stats-banner .stat-panel .stat-metric .metric-chart-text.percent-offset {
   left: 3px;
-  top: 41px;
+  top: 47px;
 }
 .stats-banner .stat-panel .stat-metric .stat-secondary {
   color: #888888;
@@ -3980,6 +2843,9 @@
     <style type="text/css">
         .iterationtrackingboard {
   overflow-y: hidden;
+}
+.iterationtrackingboard .cardboard {
+  overflow-y: auto;
 }
 .iterationtrackingboard .header {
   line-height: normal;

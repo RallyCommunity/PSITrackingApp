@@ -1,6 +1,9 @@
 .iterationtrackingboard {
   overflow-y: hidden;
 }
+.iterationtrackingboard .cardboard {
+  overflow-y: auto;
+}
 .iterationtrackingboard .header {
   line-height: normal;
   padding: 5px 5px 2px 5px;
