@@ -7,6 +7,16 @@
 
     <script type="text/javascript">
         Rally.onReady(function () {
+                Ext.define('CardboardFix', {
+    override: 'Rally.ui.cardboard.CardBoard',
+
+    //This override prevents sending up warning flares
+    //in board mode, since technically the grid board is trying to show
+    //SchedulableArtifacts and Features
+    _validateGroupByAttribute: function (models) {
+      return true;
+    }
+});
                 (function() {
     var Ext = window.Ext4 || window.Ext;
 
@@ -2340,8 +2350,6 @@
         expandingNodesRespectProjectScoping: !this.getSetting('ignoreProjectScoping')
       };
 
-      config.filters = [context.getTimeboxScope().getQueryFilter()];
-
       return Ext.create('Rally.data.wsapi.TreeStoreBuilder').build(config).then({
         success: function (store) {
           return store;
@@ -2374,6 +2382,9 @@
         modelNames: this._getModelNames(),
         gridConfig: this._getGridConfig(gridStore),
         cardBoardConfig: this._getBoardConfig(),
+        storeConfig: {
+            filters: [context.getTimeboxScope().getQueryFilter()]
+        },
         addNewPluginConfig: {
           style: {
             'float': 'left',
@@ -2496,8 +2507,8 @@
 
     _getBoardConfig: function() {
       return {
-        types: [].concat(this.eModelNames),
-        attribute: 'ScheduleState',
+        types: [this.lowestLevelPiName],
+        attribute: 'State',
         columConfig: {
           fields: (this.getSetting('cardFields') && this.getSetting('cardFields').split(',')) ||
             [this.lowestLevelPiName, 'Tasks', 'Defects', 'Discussion', 'PlanEstimate', 'Iteration']
@@ -2606,7 +2617,8 @@
 
             Rally.launchApp('Rally.apps.releasetracking.ReleaseTrackingApp', {
                 name:"Release Tracking Board",
-	            parentRepos:""
+                parentRepos:"",
+                version:"1.0.1"
             });
 
         });

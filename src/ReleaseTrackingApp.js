@@ -124,8 +124,6 @@
         expandingNodesRespectProjectScoping: !this.getSetting('ignoreProjectScoping')
       };
 
-      config.filters = [context.getTimeboxScope().getQueryFilter()];
-
       return Ext.create('Rally.data.wsapi.TreeStoreBuilder').build(config).then({
         success: function (store) {
           return store;
@@ -158,6 +156,9 @@
         modelNames: this._getModelNames(),
         gridConfig: this._getGridConfig(gridStore),
         cardBoardConfig: this._getBoardConfig(),
+        storeConfig: {
+            filters: [context.getTimeboxScope().getQueryFilter()]
+        },
         addNewPluginConfig: {
           style: {
             'float': 'left',
@@ -280,8 +281,8 @@
 
     _getBoardConfig: function() {
       return {
-        types: [].concat(this.eModelNames),
-        attribute: 'ScheduleState',
+        types: [this.lowestLevelPiName],
+        attribute: 'State',
         columConfig: {
           fields: (this.getSetting('cardFields') && this.getSetting('cardFields').split(',')) ||
             [this.lowestLevelPiName, 'Tasks', 'Defects', 'Discussion', 'PlanEstimate', 'Iteration']

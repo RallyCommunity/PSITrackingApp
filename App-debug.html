@@ -9,6 +9,7 @@
     <script type="text/javascript">
         Rally.loadScripts(
                 [
+                      "src/override/CardBoardFix.js",
                       "src/statsbanner/BannerWidget.js",
                       "src/statsbanner/Gauge.js",
                       "src/statsbanner/PlannedVelocity.js",
@@ -29,7 +30,9 @@
                 ],
         function() {
             Rally.launchApp('Rally.apps.releasetracking.ReleaseTrackingApp', {
-                name:"Release Tracking Board"
+                name:"Release Tracking Board",
+                parentRepos:"",
+                version:"1.0.1"
             });
         }, true);
     </script>

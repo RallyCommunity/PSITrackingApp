@@ -4,6 +4,7 @@
    "server": "https://rally1.rallydev.com",
    "sdk": "2.1",
    "javascript": [
+      "src/override/CardBoardFix.js",
       "src/statsbanner/BannerWidget.js",
       "src/statsbanner/Gauge.js",
       "src/statsbanner/PlannedVelocity.js",
