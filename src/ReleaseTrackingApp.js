@@ -42,9 +42,6 @@
       }
     },
 
-    eModelNames: ['User Story', 'Defect', 'Defect Suite', 'Test Set'],
-    sModelNames: [],
-
     onScopeChange: function() {
       if(!this.rendered) {
         this.on('afterrender', this.onScopeChange, this, {single: true});
@@ -79,17 +76,13 @@
       typeStore.load({
         scope: this,
         callback: function (records) {
-          this.lowestLevelPiName = records[0].get('ElementName');
-          this.sModelNames = Ext.Array.from(_.first(records).get('TypePath'));
-          this.sModelMap = _.transform(records, function (acc, rec) { acc[rec.get('TypePath')] = rec; }, {});
+          this.piTypes = Ext.Array.from(_.first(records).get('TypePath'));
 
           this._addStatsBanner();
           this._getGridStore().then({
             success: function(gridStore) {
               var model = gridStore.model;
               this._addGridBoard(gridStore);
-              // gridStore.setParentTypes(this.sModelNames);
-              // gridStore.load();
             },
             scope: this
           });
@@ -99,7 +92,7 @@
     },
 
     _getModelNames: function () {
-      return _.union(this.sModelNames, this.eModelNames);
+      return this.piTypes;
     },
 
     getSettingsFields: function () {
@@ -281,11 +274,10 @@
 
     _getBoardConfig: function() {
       return {
-        types: [this.lowestLevelPiName],
         attribute: 'State',
         columConfig: {
           fields: (this.getSetting('cardFields') && this.getSetting('cardFields').split(',')) ||
-            [this.lowestLevelPiName, 'Tasks', 'Defects', 'Discussion', 'PlanEstimate', 'Iteration']
+            ['Tasks', 'Defects', 'Discussion', 'PlanEstimate', 'Iteration']
         }
       };
     },
