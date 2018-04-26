@@ -2,11 +2,8 @@
    "name": "Release Tracking Board",
    "className": "Rally.apps.releasetracking.ReleaseTrackingApp",
    "server": "https://rally1.rallydev.com",
-   "sdk": "2.0rc3",
+   "sdk": "2.1",
    "javascript": [
-      "treegrid/FormattedIDRendererOverride.js",
-      "treegrid/TreeStore.js",
-      "treegrid/TreeStoreBuilder.js",
       "src/statsbanner/BannerWidget.js",
       "src/statsbanner/Gauge.js",
       "src/statsbanner/PlannedVelocity.js",

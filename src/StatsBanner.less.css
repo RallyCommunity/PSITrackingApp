@@ -40,6 +40,9 @@
   height: 85px;
   padding-top: 20px;
 }
+.stats-banner .stat-panel .stat-metric.late {
+  padding-top: 25px;
+}
 .stats-banner .stat-panel .stat-metric .metric-percent {
   display: inline;
   font-size: 12px;
@@ -49,6 +52,7 @@
   color: #888888;
   font-size: 18px;
   padding-right: 5px;
+  margin-top: 10px;
 }
 .stats-banner .stat-panel .stat-metric .metric-chart {
   position: absolute;
@@ -66,12 +70,12 @@
 }
 .stats-banner .stat-panel .stat-metric .metric-chart-text {
   position: absolute;
-  top: 43px;
+  top: 48px;
   width: 100%;
 }
 .stats-banner .stat-panel .stat-metric .metric-chart-text.percent-offset {
   left: 3px;
-  top: 41px;
+  top: 47px;
 }
 .stats-banner .stat-panel .stat-metric .stat-secondary {
   color: #888888;

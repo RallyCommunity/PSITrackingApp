@@ -116,8 +116,8 @@
                             dataLabels: {
                                 enabled: false
                             },
-                            size: height - 4,
-                            innerSize: height - 14,
+                            size: height - 14,
+                            innerSize: height - 24,
                             enableMouseTracking: false, //turns off chart hover, but for tooltips you'll need this on
                             shadow: false
                         }
