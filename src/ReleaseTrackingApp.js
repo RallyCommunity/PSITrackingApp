@@ -130,6 +130,7 @@
         itemId: 'statsBanner',
         context: this.getContext(),
         margin: '0 0 5px 0',
+        lowestLevelPi: this.piTypes[0],
         listeners: {
           resize: this._resizeGridBoardToFillSpace,
           scope: this
@@ -291,7 +292,6 @@
         xtype: 'rallytreegrid',
         store: gridStore,
         columnCfgs: this._getGridColumns(),
-        model: 'UserStory',
         showSummary: true,
         summaryColumns: this._getSummaryColumnConfig(),
         plugins: [],
@@ -336,7 +336,7 @@
     },
 
     _getGridColumns: function (columns) {
-      var result = ['FormattedID', 'Name', 'PercentDoneByStoryPlanEstimate', 'PreliminaryEstimate', 'ScheduleState', 'PlanEstimate', 'Blocked', 'Iteration', 'Owner', 'Discussion'];
+      var result = ['FormattedID', 'Name', 'State', 'PercentDoneByStoryPlanEstimate', 'PreliminaryEstimate', 'ScheduleState', 'PlanEstimate', 'Blocked', 'Iteration', 'Owner', 'Discussion'];
 
       if (columns) {
         result = columns;

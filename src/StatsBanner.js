@@ -29,11 +29,12 @@
 
         config: {
             context: null,
-            expanded: true
+            expanded: true,
+            lowestLevelPi: 'portfolioitem/feature'
         },
 
         items: [
-            {xtype: 'statsbannerplannedvelocity', unitLabel: 'feature points'},
+            {xtype: 'statsbannerplannedvelocity', unitLabel: 'points'},
             {xtype: 'statsbannertimeboxend'},
             {xtype: 'statsbannerestimatedstories'},
             {xtype: 'statsbanneraccepted', byCount: false},
@@ -69,7 +70,7 @@
 
             //var tbs = this.context.getTimeboxScope();
             this.store = Ext.create('Rally.data.wsapi.artifact.Store', {
-                models: ['PortfolioItem/Feature'],
+                models: [this.lowestLevelPi],
                 fetch: [
                   'Name',
                   'PercentDoneByStoryCount', 'PercentDoneByStoryPlanEstimate',
@@ -134,6 +135,7 @@
                 flex: 1,
                 context: this.context,
                 store: this.store,
+                lowestLevelPi: this.lowestLevelPi,
                 listeners: {
                     ready: this._onReady,
                     scope: this

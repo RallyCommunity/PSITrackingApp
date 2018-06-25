@@ -9,8 +9,6 @@
         alias:'widget.statsbanneriterationprogress',
         requires: [
             'Rally.ui.carousel.Carousel',
-            //'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.BurndownChart',
-            //'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.CumulativeFlowChart',
             'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.MinimalPieChart',
             'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.PieChart',
             'Rally.apps.releasetracking.statsbanner.IterationProgressDialog',
@@ -19,7 +17,8 @@
 
         config: {
             context: null,
-            store: null
+            store: null,
+            lowestLevelPi: 'portfolioitem/feature'
         },
 
         currentChartDisplayed: 0,
@@ -65,24 +64,6 @@
                     context: this.context,
                     store: this.store
                 }
-                //{
-                    //xtype: 'statsbannerburndownchart',
-                    //width: 150,
-                    //height: 63,
-                    //minimalMode: true,
-                    //clickHandler: boundClickHandler,
-                    //context: this.context,
-                    //store: this.store
-                //},
-                //{
-                    //xtype: 'statsbannercumulativeflowchart',
-                    //width: 150,
-                    //height: 63,
-                    //minimalMode: true,
-                    //clickHandler: boundClickHandler,
-                    //context: this.context,
-                    //store: this.store
-                //}
             ];
 
             _.each(this.carouselItems, function(carouselItem) {
@@ -116,7 +97,8 @@
             Ext.create('Rally.apps.releasetracking.statsbanner.IterationProgressDialog', {
                 startingIndex: currentIndex,
                 store: this.store,
-                context: this.context
+                context: this.context,
+                lowestLevelPi: this.lowestLevelPi
             });
         },
 
