@@ -1,9 +1,9 @@
-PSITrackingApp
+Release Tracking Board
 ==============
 
-The PSI Tracking App is a varient of the new Iteration Status Page in Rally. This app shows the Features for a specified release and allows you to drilldown to the Stories, Defects, Tasks, ect. that roll up to the Feature.
+The Release Tracking Board is a variant of the new Iteration Status Page in Rally. This app shows the Features for a specified release and allows you to drilldown to the Stories, Defects, Tasks, ect. that roll up to the Feature.
 
-It also give dashboard metrics for tracking the progress of the PSI / Release. The metrics are:
+It also give dashboard metrics for tracking the progress of the Release. The metrics are:
 * Planned vs. Committed Velocity
 * Release Days Left
 * Percent of Stories with a Planned Estimate set
