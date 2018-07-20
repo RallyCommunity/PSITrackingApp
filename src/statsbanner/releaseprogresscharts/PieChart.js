@@ -16,7 +16,8 @@
         width: undefined,
         displayTitle: 'Pie',
         config: {
-            context: null
+            context: null,
+            lowestLevelPi: 'portfolioitem/feature'
         },
 
         initComponent: function() {
@@ -65,7 +66,7 @@
             this._childChartData = [];
 
             this.store = Ext.create('Rally.data.wsapi.artifact.Store', {
-                models: ['PortfolioItem/Feature'],
+                models: [this.lowestLevelPi],
                 fetch: ['UserStories', 'PreliminaryEstimate', 'Value', 'FormattedID', 'State[Ordinal;Name]', 'LeafStoryCount', 'Name',
                         'PlannedEndDate', 'PlannedStartDate', 'ActualStartDate', 'ActualEndDate', 'PercentDoneByStoryPlanEstimate', 'PercentDoneByStoryCount'],
                 filters: [this.context.getTimeboxScope().getQueryFilter()],
@@ -83,13 +84,14 @@
         _loadChildCollections: function() {
             var records = this.store.getRange();
             var promises = [];
+            var piField = this.lowestLevelPi.split('/')[1];
             _.each(records, function(record) {
                 if (record.get('UserStories') && record.get('UserStories').Count) {
                   var store = Ext.create('Rally.data.wsapi.Store', {
                       model: 'UserStory',
-                      fetch: ['FormattedID', 'Name', 'ScheduleState', 'Blocked', 'BlockedReason', 'Feature'],
+                      fetch: ['FormattedID', 'Name', 'ScheduleState', 'Blocked', 'BlockedReason', piField],
                       filters: [{
-                        property: 'Feature',
+                        property: piField,
                         value: record.get('_ref')
                       }, {
                         property: 'DirectChildrenCount',

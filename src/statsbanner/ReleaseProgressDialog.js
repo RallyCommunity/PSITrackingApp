@@ -10,8 +10,6 @@
         alias:'widget.statsbanneriterationprogressdialog',
         requires: [
             'Rally.apps.releasetracking.statsbanner.IterationProgressDialogChartToggle',
-            //'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.BurndownChart',
-            //'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.CumulativeFlowChart',
             'Rally.apps.releasetracking.statsbanner.iterationprogresscharts.PieChart',
             'Rally.ui.carousel.Carousel'
         ],
@@ -24,7 +22,8 @@
             height: 650,
             closable: true,
             store: null,
-            context: null
+            context: null,
+            lowestLevelPi: 'portfolioitem/feature'
         },
         layout: {
             type: 'vbox',
@@ -42,14 +41,7 @@
             var chartHeight = 570;
 
             this.callParent(arguments);
-            //this.toggle = this.add({
-                //xtype: 'iterationprogressdialogcharttoggle',
-                //startingIndex: this.startingIndex,
-                //listeners: {
-                    //toggle: this._toggleButtonClick,
-                    //scope: this
-                //}
-            //});
+            
             this.carousel = this.add({
                 xtype: 'rallycarousel',
                 showDots: false,
@@ -59,22 +51,9 @@
                         xtype: 'statsbannerpiechart',
                         width: chartWidth,
                         height: chartHeight,
-                        context: this.context
+                        context: this.context,
+                        lowestLevelPi: this.lowestLevelPi
                     }
-                    //{
-                        //xtype: 'statsbannerburndownchart',
-                        //width: chartWidth,
-                        //height: chartHeight,
-                        //context: this.context,
-                        //store: this.store
-                    //},
-                    //{
-                        //xtype: 'statsbannercumulativeflowchart',
-                        //width: chartWidth,
-                        //height: chartHeight,
-                        //context: this.context,
-                        //store: this.store
-                    //}
                 ],
                 startingIndex: this.startingIndex,
                 listeners: {

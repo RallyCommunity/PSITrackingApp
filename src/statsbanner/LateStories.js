@@ -11,7 +11,7 @@
             xtype: 'rallygrid',
             model: 'User Story',
             headerCls: 'leftright-header-text',
-            columnCfgs: ['FormattedID', 'Name', 'Feature', 'Plan Estimate', 'Iteration', 'Release', 'Project', 'Owner'],
+            columnCfgs: ['FormattedID', 'Name', config.lowestLevelPi, 'Plan Estimate', 'Iteration', 'Release', 'Project', 'Owner'],
             pagingToolbarCfg: {
               pageSizes: [5, 10, 15]
             },
@@ -93,7 +93,7 @@
             //
           var store = Ext.create('Rally.data.wsapi.Store', {
             model: 'UserStory',
-            fetch: ['FormattedID', 'Name', 'Feature', 'Release', 'Iteration', 'Project', 'Owner'],
+            fetch: ['FormattedID', 'Name', this._getLowestLevelPIFieldName(), 'Release', 'Iteration', 'Project', 'Owner'],
             filters: filters,
             autoLoad: true,
             pageSize: 5
@@ -107,14 +107,19 @@
             //filters: filters,
             store: store,
             title: 'User Stories Assigned to Later Releases or Iteration',
-            width: 800
+            width: 800,
+            lowestLevelPi: this._getLowestLevelPIFieldName()
           }).show();
+        },
+
+        _getLowestLevelPIFieldName: function() {
+            return this.lowestLevelPi.split('/')[1];
         },
 
         _filterPopover: function(record) {
           return [
             {
-              property: 'Feature.Release.Name',
+              property: this._getLowestLevelPIFieldName() + '.Release.Name',
               operator: '=',
               value: record.Release.Name
             },
