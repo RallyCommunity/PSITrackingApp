@@ -46,7 +46,9 @@
                 this._addEmptyChart();
             }
         },
-
+       _getTimeZone: function () {
+            return this.getContext().getUser().UserProfile.TimeZone || this.getContext().getWorkspace().WorkspaceConfiguration.TimeZone || "UTC";
+        },
         _addEmptyChart: function() {
             this._cleanupChart();
             this._addChart({
@@ -164,7 +166,8 @@
                         project: projectRef
                     },
                     success: function(results) {
-                        deferred.resolve((results.Schema.properties.EndDate.format.tzOffset || 0) / 60);
+                        //deferred.resolve((results.Schema.properties.EndDate.format.tzOffset || 0) / 60);
+                        deferred.resolve((0 - new Date(new Date().toLocaleString('en-US', { timeZone: this._getTimeZone() })).getTimezoneOffset()) / 60);
                     },
                     requester: this,
                     scope: this
